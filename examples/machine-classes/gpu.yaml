@@ -1,0 +1,14 @@
+apiVersion: autoscaler.talos.dev/v1alpha1
+kind: MachineClass
+metadata:
+  name: gpu
+spec:
+  vcpu: 8
+  memoryGiB: 32
+  diskGiB: 200
+  networkBridge: vmbr0
+  storagePool: local-lvm
+  gpu:
+    vendor: nvidia
+    model: "RTX-4090"
+    pciAddress: "0000:01:00.0"

@@ -1,0 +1,48 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: talos-proxmox-autoscaler
+  namespace: autoscaler-system
+  labels:
+    app.kubernetes.io/name: talos-proxmox-autoscaler
+    app.kubernetes.io/component: autoscaler
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: talos-proxmox-autoscaler
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow from KEDA operator for scaler callbacks
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: keda-operator
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Kubernetes API server
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 6443
+    # Proxmox API
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 8006
+    # DNS
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

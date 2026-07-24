@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: talos-proxmox-autoscaler
+  namespace: autoscaler-system
+  labels:
+    app.kubernetes.io/name: talos-proxmox-autoscaler
+    app.kubernetes.io/component: autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: talos-proxmox-autoscaler
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: talos-proxmox-autoscaler
+        app.kubernetes.io/component: autoscaler
+    spec:
+      serviceAccountName: talos-proxmox-autoscaler
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: autoscaler
+          image: ghcr.io/your-org/talos-proxmox-autoscaler:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # ponytail: secrets mounted as files, not env vars
+            # Env vars leak into `kubectl describe pod` and logs
+            - name: PROXMOX_API_TOKEN_ID_FILE
+              value: "/etc/secrets/proxmox_api_token_id"
+            - name: PROXMOX_API_TOKEN_SECRET_FILE
+              value: "/etc/secrets/proxmox_api_token_secret"
+            - name: CLUSTER_TOKEN_FILE
+              value: "/etc/secrets/cluster_token"
+            - name: CA_CERT_B64_FILE
+              value: "/etc/secrets/ca_cert_b64"
+            - name: PROXMOX_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: proxmox_api_url
+                  optional: true
+            - name: PROXMOX_INSECURE
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: proxmox_insecure
+                  optional: true
+            - name: TALOS_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: talos_version
+                  optional: true
+            - name: MIN_WORKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: min_workers
+                  optional: true
+            - name: MAX_WORKERS
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: max_workers
+                  optional: true
+          volumeMounts:
+            - name: tofu-state
+              mountPath: /var/lib/tofu
+            - name: secrets
+              mountPath: /etc/secrets
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: tofu-state
+          emptyDir: {}
+        - name: secrets
+          secret:
+            secretName: autoscaler-secrets
+      nodeSelector:
+        kubernetes.io/os: linux
+      priorityClassName: system-cluster-critical
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: talos-proxmox-autoscaler

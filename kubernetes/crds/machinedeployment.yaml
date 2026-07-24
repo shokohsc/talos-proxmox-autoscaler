@@ -1,0 +1,113 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: machinedeployments.autoscaler.talos.dev
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: autoscaler.talos.dev
+  names:
+    kind: MachineDeployment
+    listKind: MachineDeploymentList
+    plural: machinedeployments
+    singular: machinedeployment
+    shortNames:
+      - md
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - replicas
+                - machineClassName
+                - clusterName
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+                  description: Desired number of machines
+                machineClassName:
+                  type: string
+                  minLength: 1
+                  description: Reference to the MachineClass to use
+                clusterName:
+                  type: string
+                  minLength: 1
+                  description: Talos cluster name
+                minReadySeconds:
+                  type: integer
+                  minimum: 0
+                  description: Minimum seconds a machine must be ready
+                updateStrategy:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum:
+                        - RollingUpdate
+                        - OnDelete
+                      default: RollingUpdate
+                    rollingUpdate:
+                      type: object
+                      properties:
+                        maxSurge:
+                          type: string
+                          default: "25%"
+                        maxUnavailable:
+                          type: string
+                          default: "25%"
+            status:
+              type: object
+              properties:
+                replicas:
+                  type: integer
+                readyReplicas:
+                  type: integer
+                availableReplicas:
+                  type: integer
+                updatedReplicas:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+      additionalPrinterColumns:
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: MachineClass
+          type: string
+          jsonPath: .spec.machineClassName
+        - name: Cluster
+          type: string
+          jsonPath: .spec.clusterName
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

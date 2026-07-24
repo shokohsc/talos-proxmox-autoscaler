@@ -1,0 +1,17 @@
+apiVersion: autoscaler.talos.dev/v1alpha1
+kind: MachineDeployment
+metadata:
+  name: workers
+  namespace: autoscaler-system
+spec:
+  replicas: 1
+  machineClassName: standard
+  minReplicas: 1
+  maxReplicas: 10
+  template:
+    metadata:
+      labels:
+        role: worker
+        class: standard
+    spec:
+      bootTimeout: "5m"

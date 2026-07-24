@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autoscaler-system
+  labels:
+    app.kubernetes.io/name: talos-proxmox-autoscaler
+    app.kubernetes.io/part-of: autoscaler-system

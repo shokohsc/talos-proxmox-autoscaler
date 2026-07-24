@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autoscaler-config
+  namespace: autoscaler-system
+  labels:
+    app.kubernetes.io/name: talos-proxmox-autoscaler
+    app.kubernetes.io/component: autoscaler
+data:
+  PROXMOX_NODE: "pve"
+  NETWORK_BRIDGE: "vmbr0"
+  STORAGE_POOL: "local-lvm"
+  DRAIN_TIMEOUT: "300s"
+  MAX_CONCURRENT: "3"
+  SCALE_DOWN_DELAY: "10m"

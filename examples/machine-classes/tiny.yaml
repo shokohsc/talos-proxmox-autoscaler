@@ -1,0 +1,10 @@
+apiVersion: autoscaler.talos.dev/v1alpha1
+kind: MachineClass
+metadata:
+  name: tiny
+spec:
+  vcpu: 2
+  memoryGiB: 4
+  diskGiB: 50
+  networkBridge: vmbr0
+  storagePool: local-lvm
