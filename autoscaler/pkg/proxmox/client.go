@@ -157,7 +157,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 
 	// Wait for clone to finish
 	var taskID string
-	json.Unmarshal(data, &taskID)
+	_ = json.Unmarshal(data, &taskID)
 	if taskID != "" {
 		if err := c.waitForTask(ctx, taskID); err != nil {
 			return fmt.Errorf("wait for clone task: %w", err)

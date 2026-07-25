@@ -64,8 +64,9 @@ jobs:
           fail-build: false
           output-format: sarif
 
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always() && steps.grype.outputs.sarif != '' && hashFiles(steps.grype.outputs.sarif) != ''
+      - name: Upload SARIF (only if grype found results)
+        if: always() && steps.grype.outputs.exit-code == '1'
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 
