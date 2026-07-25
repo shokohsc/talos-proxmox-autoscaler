@@ -75,9 +75,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: autoscaler/
-          push: false
-          load: true
-          tags: ${{ env.IMAGE_NAME }}:ci-${{ github.sha }}
+          push: ${{ github.event_name == 'push' }}
+          load: ${{ github.event_name != 'push' }}
+          tags: ${{ github.event_name == 'push' && format('{0}:main', env.IMAGE_NAME) || format('{0}:ci-{1}', env.IMAGE_NAME, github.sha) }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
