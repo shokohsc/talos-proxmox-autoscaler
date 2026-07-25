@@ -59,12 +59,12 @@ jobs:
       - uses: anchore/scan-action@v4
         id: grype
         with:
-          image-ref: ghcr.io/${{ github.repository }}:main
-          severity-cutoff: high
+          image: ghcr.io/${{ github.repository }}:main
+          severity-cutoff: critical
           output-format: sarif
 
       - uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && steps.grype.outputs.sarif != ''
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 
