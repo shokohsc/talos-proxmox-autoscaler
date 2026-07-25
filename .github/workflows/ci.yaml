@@ -24,8 +24,11 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          cache-dependency-path: autoscaler/go.sum
 
-      - uses: golangci/golangci-lint-action@v6
+      - name: Run golangci-lint
+        working-directory: autoscaler
+        uses: golangci/golangci-lint-action@v6
         with:
           version: latest
 
@@ -39,15 +42,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+          cache-dependency-path: autoscaler/go.sum
 
       - name: Run tests
+        working-directory: autoscaler
         run: go test -race -coverprofile=coverage.out ./...
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage
-          path: coverage.out
+          path: autoscaler/coverage.out
 
   build:
     name: Build
@@ -60,13 +65,13 @@ jobs:
 
       - uses: docker/build-push-action@v6
         with:
-          context: .
+          context: autoscaler/
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  security:
-    name: Security Scan
+  grype:
+    name: Vulnerability Scan
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -74,14 +79,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: anchore/scan-action@v4
+        id: grype
         with:
-          scan-type: fs
-          severity: CRITICAL,HIGH
-          format: sarif
-          output: trivy-results.sarif
+          path: autoscaler/
+          severity-cutoff: high
+          output-format: sarif
 
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: ${{ steps.grype.outputs.sarif }}

@@ -1,6 +1,8 @@
 name: Security
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
@@ -14,6 +16,7 @@ jobs:
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
     steps:
@@ -34,13 +37,18 @@ jobs:
       - uses: github/codeql-action/init@v3
         with:
           languages: go
+          working-directory: autoscaler
 
       - uses: github/codeql-action/autobuild@v3
+        with:
+          working-directory: autoscaler
 
       - uses: github/codeql-action/analyze@v3
+        with:
+          working-directory: autoscaler
 
-  trivy:
-    name: Trivy Scan
+  grype:
+    name: Grype Scan
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -48,18 +56,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: aquasecurity/trivy-action@0.28.0
+      - uses: anchore/scan-action@v4
+        id: grype
         with:
-          scan-type: image
           image-ref: ghcr.io/${{ github.repository }}:main
-          severity: CRITICAL,HIGH
-          format: sarif
-          output: trivy.sarif
+          severity-cutoff: high
+          output-format: sarif
 
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
-          sarif_file: trivy.sarif
+          sarif_file: ${{ steps.grype.outputs.sarif }}
 
   kubeval:
     name: Kubeval
@@ -69,5 +76,5 @@ jobs:
 
       - uses: instrumenta/kubeval-action@master
         with:
-          files: deploy/
+          files: kubernetes/
           strict: true
