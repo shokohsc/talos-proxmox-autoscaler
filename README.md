@@ -1,11 +1,11 @@
 # Talos Kubernetes Node Autoscaler for Proxmox
 
-A controller-runtime based autoscaler that watches for unschedulable pods and provisions Talos Linux worker VMs on Proxmox VE via OpenTofu.
+A controller-runtime based autoscaler that watches for unschedulable pods and provisions Talos Linux worker VMs on Proxmox VE via the Proxmox REST API.
 
 ## How It Works
 
 ```
-Unschedulable Pods → Controller (30s reconcile) → OpenTofu apply → Proxmox VM
+Unschedulable Pods → Controller (30s reconcile) → Proxmox API → VM
     → PXE Boot (scsi0 empty → net0) → Talos Config Server → Worker joins cluster
 ```
 
@@ -13,7 +13,7 @@ Unschedulable Pods → Controller (30s reconcile) → OpenTofu apply → Proxmox
 ┌─────────────────────────────────────────────────────────────┐
 │                     Kubernetes Cluster                       │
 │                                                             │
-│   Pending Pods ──▶ Go Controller ──▶ OpenTofu ──▶ Proxmox  │
+│   Pending Pods ──▶ Go Controller ──▶ Proxmox API ──▶ Proxmox  │
 │        ▲                │                                   │
 │        │          ┌─────┴─────┐                             │
 │        │          │  30s loop │                             │
@@ -38,14 +38,13 @@ Unschedulable Pods → Controller (30s reconcile) → OpenTofu apply → Proxmox
 
 ```
 .
-├── autoscaler/                  # Go autoscaler
+├── autoscaler/
 │   ├── main.go
+│   ├── Dockerfile
+│   ├── Makefile
 │   └── pkg/
 │       ├── autoscaler/          # Controller, types
-│       └── tofu/                # OpenTofu subprocess wrapper
-├── terraform/                   # OpenTofu modules
-│   ├── main.tf                  # Root module (proxmox provider)
-│   └── modules/proxmox-vm/      # VM provisioning module
+│       └── proxmox/             # Proxmox REST API client
 ├── kubernetes/
 │   ├── crds/                    # MachineClass, MachineDeployment CRDs
 │   ├── rbac/                    # ServiceAccount, ClusterRole, Binding
@@ -60,12 +59,16 @@ Unschedulable Pods → Controller (30s reconcile) → OpenTofu apply → Proxmox
 │   ├── test-pod.yaml
 │   └── load-test.sh
 ├── docs/
+│   ├── README.md
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOYMENT.md
-│   ├── CRD_REFERENCE.md
-│   └── README.md
-├── Makefile
-├── Dockerfile
+│   ├── TROUBLESHOOTING.md
+│   └── CRD_REFERENCE.md
+├── .github/workflows/
+│   ├── ci.yaml
+│   ├── release.yaml
+│   └── security.yaml
+├── README.md
 └── plan.md
 ```
 
@@ -76,7 +79,7 @@ Unschedulable Pods → Controller (30s reconcile) → OpenTofu apply → Proxmox
 - Proxmox VE 8.x cluster (3 nodes)
 - Talos Linux ISO uploaded to Proxmox
 - Kubernetes cluster with 3 permanent control planes
-- OpenTofu >= 1.6, Go >= 1.22
+- Go >= 1.22
 - PXE boot infrastructure with a Talos config server
 
 ### Install
@@ -108,8 +111,7 @@ spec:
 EOF
 
 # Build and deploy
-make docker-build
-make deploy
+cd autoscaler && make build
 ```
 
 ### Verify
@@ -124,8 +126,15 @@ kubectl get pods -n autoscaler-system
 
 - [Architecture](docs/ARCHITECTURE.md) — Components, data flow, failure modes
 - [Deployment Guide](docs/DEPLOYMENT.md) — Step-by-step setup including secrets, Proxmox API user, KEDA, descheduler
-- [CRD Reference](docs/CRD_REFERENCE.md) — MachineClass, MachineTemplate, MachineDeployment fields
-- [Troubleshooting](docs/README.md) — Common issues and solutions
+- [CRD Reference](docs/CRD_REFERENCE.md) — MachineClass, MachineDeployment fields
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and solutions
+
+## CI/CD
+
+GitHub Actions workflows (`.github/workflows/`) handle:
+- **ci.yaml** — Lint, test, build on PRs; build + push to `ghcr.io` on main push
+- **release.yaml** — On `v*` tags: multi-arch build, push to GHCR, cosign sign, SBOM, GitHub Release
+- **security.yaml** — Grype image scans, CodeQL, dependency review
 
 ## License
 
