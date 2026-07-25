@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/talos-proxmox-autoscaler/pkg/tofu"
+	"github.com/talos-proxmox-autoscaler/pkg/proxmox"
 )
 
 const (
@@ -31,9 +31,10 @@ const (
 
 type MachineDeploymentReconciler struct {
 	client.Client
-	Scheme     *runtime.Scheme
-	TofuClient *tofu.Client
-	KubeClient kubernetes.Interface
+	Scheme       *runtime.Scheme
+	Proxmox      *proxmox.Client
+	KubeClient   kubernetes.Interface
+	BaseVMID     int
 }
 
 func (r *MachineDeploymentReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -121,7 +122,7 @@ func (r *MachineDeploymentReconciler) handleDeletion(ctx context.Context, deploy
 			return reconcile.Result{}, err
 		}
 
-		if err := r.TofuClient.Destroy(ctx, deployment.Spec.ClusterName); err != nil {
+		if err := r.deleteAllVMs(ctx, deployment); err != nil {
 			return reconcile.Result{}, err
 		}
 
@@ -233,13 +234,13 @@ func (r *MachineDeploymentReconciler) removeNode(ctx context.Context, deployment
 		log.Error(err, "Failed to drain node, proceeding with deletion", "node", nodeName)
 	}
 
-	// Extract VM index from node name: <cluster>-worker-<index>
 	var vmIndex int
 	if _, err := fmt.Sscanf(nodeName, "%s-worker-%d", &deployment.Spec.ClusterName, &vmIndex); err != nil {
 		return fmt.Errorf("failed to parse VM index from node name %s: %w", nodeName, err)
 	}
 
-	if err := r.TofuClient.DeleteVM(ctx, deployment.Spec.ClusterName, vmIndex); err != nil {
+	vmid := r.BaseVMID + vmIndex
+	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 		return fmt.Errorf("failed to delete VM: %w", err)
 	}
 
@@ -250,16 +251,18 @@ func (r *MachineDeploymentReconciler) scaleUp(ctx context.Context, deployment *M
 	log := klog.FromContext(ctx)
 
 	for i := deployment.Status.ReadyReplicas; i < desired; i++ {
-		log.Info("Creating new worker VM", "index", i)
+		vmid := r.BaseVMID + int(i)
+		vmName := fmt.Sprintf("%s-worker-%d", deployment.Spec.ClusterName, i)
+		log.Info("Creating new worker VM", "name", vmName, "vmid", vmid)
 
-		vmIP, err := r.TofuClient.CreateVM(ctx, tofu.VMConfig{
-			ClusterName:   deployment.Spec.ClusterName,
-			VMIndex:       int(i),
+		vmIP, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
+			Name:          vmName,
+			VMID:          vmid,
 			VCPU:          machineClass.Spec.VCPU,
-			MemoryGiB:     machineClass.Spec.MemoryGiB,
+			MemoryMiB:     machineClass.Spec.MemoryGiB * 1024,
 			DiskGiB:       machineClass.Spec.DiskGiB,
-			NetworkBridge: machineClass.Spec.NetworkBridge,
 			StoragePool:   machineClass.Spec.StoragePool,
+			NetworkBridge: machineClass.Spec.NetworkBridge,
 			MACAddress:    machineClass.Spec.MACAddress,
 			Serial:        machineClass.Spec.Serial,
 		})
@@ -285,14 +288,15 @@ func (r *MachineDeploymentReconciler) scaleDown(ctx context.Context, deployment 
 	log := klog.FromContext(ctx)
 
 	for i := deployment.Status.ReadyReplicas; i > desired; i-- {
-		log.Info("Removing worker node", "index", i)
-
 		nodeName := fmt.Sprintf("%s-worker-%d", deployment.Spec.ClusterName, i-1)
+		log.Info("Removing worker node", "node", nodeName)
+
 		if err := r.drainNode(ctx, nodeName); err != nil {
 			log.Error(err, "Failed to drain node, proceeding with deletion", "node", nodeName)
 		}
 
-		if err := r.TofuClient.DeleteVM(ctx, deployment.Spec.ClusterName, int(i-1)); err != nil {
+		vmid := r.BaseVMID + int(i-1)
+		if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 			return fmt.Errorf("failed to delete VM: %w", err)
 		}
 
@@ -346,6 +350,16 @@ func (r *MachineDeploymentReconciler) drainAllNodes(ctx context.Context, deploym
 		nodeName := fmt.Sprintf("%s-worker-%d", deployment.Spec.ClusterName, i)
 		if err := r.drainNode(ctx, nodeName); err != nil {
 			klog.FromContext(ctx).Error(err, "Failed to drain node during deletion", "node", nodeName)
+		}
+	}
+	return nil
+}
+
+func (r *MachineDeploymentReconciler) deleteAllVMs(ctx context.Context, deployment *MachineDeployment) error {
+	for i := int32(0); i < deployment.Status.ReadyReplicas; i++ {
+		vmid := r.BaseVMID + int(i)
+		if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
+			klog.FromContext(ctx).Error(err, "Failed to delete VM during deletion", "vmid", vmid)
 		}
 	}
 	return nil

@@ -98,7 +98,6 @@ kubectl get machinedeployments -n autoscaler-system -w
 
 - Secrets are mounted as files, not environment variables
 - Proxmox API token uses a dedicated user, not root
-- OpenTofu state should be stored encrypted
 
 ## Cleanup
 

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"k8s.io/klog/v2"
@@ -16,8 +17,16 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/talos-proxmox-autoscaler/pkg/autoscaler"
-	"github.com/talos-proxmox-autoscaler/pkg/tofu"
+	"github.com/talos-proxmox-autoscaler/pkg/proxmox"
 )
+
+func readFile(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
 
 func main() {
 	var (
@@ -34,6 +43,20 @@ func main() {
 
 	klog.Info("Starting talos-proxmox-autoscaler")
 
+	// Read Proxmox config from env / mounted secrets
+	proxmoxURL := getEnv("PROXMOX_API_URL", "https://pve.example.com:8006")
+	proxmoxNode := getEnv("PROXMOX_NODE", "pve")
+	tokenID := readFile(getEnv("PROXMOX_API_TOKEN_ID_FILE", "/etc/secrets/proxmox_api_token_id"))
+	tokenSecret := readFile(getEnv("PROXMOX_API_TOKEN_SECRET_FILE", "/etc/secrets/proxmox_api_token_secret"))
+	insecure := getEnv("PROXMOX_INSECURE", "false") == "true"
+	baseVMIDStr := getEnv("BASE_VMID", "2000")
+	baseVMID, _ := strconv.Atoi(baseVMIDStr)
+	if baseVMID == 0 {
+		baseVMID = 2000
+	}
+
+	proxmoxClient := proxmox.NewClient(proxmoxURL, proxmoxNode, tokenID, tokenSecret, insecure)
+
 	ctrlManager, err := manager.New(config.GetConfigOrDie(), manager.Options{
 		Scheme:                 autoscaler.NewScheme(),
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
@@ -45,8 +68,6 @@ func main() {
 		klog.Fatalf("Unable to create manager: %v", err)
 	}
 
-	tofuClient := tofu.NewClient("tofu", "/var/lib/tofu")
-
 	restConfig := ctrlManager.GetConfig()
 	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -56,8 +77,9 @@ func main() {
 	reconciler := &autoscaler.MachineDeploymentReconciler{
 		Client:     ctrlManager.GetClient(),
 		Scheme:     ctrlManager.GetScheme(),
-		TofuClient: tofuClient,
+		Proxmox:    proxmoxClient,
 		KubeClient: kubeClient,
+		BaseVMID:   baseVMID,
 	}
 
 	if err := builder.ControllerManagedBy(ctrlManager).
@@ -79,4 +101,11 @@ func main() {
 	if err := ctrlManager.Start(ctx); err != nil {
 		klog.Fatalf("Unable to start manager: %v", err)
 	}
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

@@ -68,15 +68,11 @@ kubectl create secret generic autoscaler-secrets \
 
 **Symptoms:**
 - Pods stuck in `Pending` with `FailedScheduling`
-- Autoscaler logs show `applying terraform` but no new VMs appear
+- Autoscaler logs show `creating VM` but no new VMs appear
 - MachineDeployment status shows `replicas: 1, readyReplicas: 1` but pods remain pending
 
 **Diagnosis:**
 ```bash
-# Check OpenTofu state
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  cat /var/lib/tofu/terraform.tfstate | jq .resources | head -20
-
 # Check autoscaler events
 kubectl get events -n autoscaler-system --field-selector involvedObject.kind=MachineDeployment
 
@@ -88,21 +84,24 @@ ssh root@10.0.1.11 "qm list | grep worker"
 
 | Cause | Symptom | Fix |
 |-------|---------|-----|
-| Disk space full | `tofu apply` fails with "no space on device" | Free Proxmox storage or increase disk |
-| VMID conflict | `tofu apply` fails with "already exists" | Check `PROXMOX_VMID_START`, clear stale VMIDs |
+| Disk space full | API call fails with "no space on device" | Free Proxmox storage or increase disk |
+| VMID conflict | API call fails with "already exists" | Check `BASE_VMID`, clear stale VMIDs |
 | Bridge misconfigured | VM created but no network | Verify `K8S_BRIDGE` matches Proxmox bridge name |
 | Token expired | Nodes can't join cluster | Rotate bootstrap token |
-| Storage pool wrong | `tofu apply` fails with pool error | Verify `storagePool` in MachineClass matches Proxmox |
+| Storage pool wrong | API call fails with pool error | Verify `storagePool` in MachineClass matches Proxmox |
+| API auth failure | 401 Unauthorized from Proxmox | Verify API token ID and secret |
 
 **Fix:**
 ```bash
-# Manually clean up stuck Terraform state
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  tofu state list | grep worker
+# Test Proxmox API connectivity
+curl -s -H "Authorization: PVEAPIToken=autoscaler@pve!autoscaler=${PROXMOX_API_TOKEN_SECRET}" \
+  "https://10.0.1.10:8006/api2/json/nodes" | jq '.data[].node'
 
-# Force destroy a stuck resource
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  tofu destroy -target=proxmox_vm.talos-worker-3 -auto-approve
+# List VMs on a specific node
+ssh root@10.0.1.11 "qm list"
+
+# Manually destroy a stuck VM
+ssh root@10.0.1.11 "qm destroy <vmid> --purge"
 ```
 
 ### 3. Nodes Provisioned But Not Joining Cluster
@@ -237,7 +236,7 @@ kubectl patch machinedeployment standard-workers \
 
 **Symptoms:**
 - Scale-up takes > 5 minutes
-- Autoscaler logs show long `tofu apply` times
+- Autoscaler logs show long API call times
 - Pods remain pending for extended periods
 
 **Diagnosis:**
@@ -245,8 +244,8 @@ kubectl patch machinedeployment standard-workers \
 # Check provisioning time metric
 curl -s localhost:8080/metrics | grep provision_duration
 
-# Check OpenTofu apply time
-kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler | grep "apply complete"
+# Check autoscaler logs for API call times
+kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler | grep "API call"
 
 # Check network latency to Proxmox
 curl -w "@curl-format.txt" -o /dev/null -s https://10.0.1.10:8006
@@ -306,30 +305,35 @@ qm set <vmid> --hostpci0 0000:01:00,pcie=1,x-vga=1
 kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.14.3/nvidia-device-plugin.yml
 ```
 
-### 8. OpenTofu State Corruption
+### 8. Proxmox API Timeout or Connection Issues
 
 **Symptoms:**
-- `tofu apply` fails with state lock errors
-- State shows resources that don't exist in Proxmox
+- Autoscaler logs show API call timeouts
+- VM operations take excessively long or fail
 - Inconsistent replica count
+
+**Diagnosis:**
+```bash
+# Test API latency from inside the cluster
+kubectl run debug --rm -it --image=alpine -- sh
+apk add curl
+time curl -sk -H "Authorization: PVEAPIToken=autoscaler@pve!autoscaler=${PROXMOX_API_TOKEN_SECRET}" \
+  "https://10.0.1.10:8006/api2/json/nodes"
+
+# Check Proxmox API health
+ssh root@10.0.1.11 "pveproxy status"
+```
 
 **Fix:**
 ```bash
-# Unlock state (if locked)
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  tofu force-unlock <LOCK_ID>
+# Restart Proxmox API service if unresponsive
+ssh root@10.0.1.11 "systemctl restart pveproxy"
 
-# Import existing resources into state
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  tofu import proxmox_vm.talos-worker-0 pve/local/qemu/200
+# Check for API rate limiting
+ssh root@10.0.1.11 "journalctl -u pveproxy | tail -20"
 
-# Refresh state
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- \
-  tofu refresh
-
-# Nuclear option: delete and rebuild state
-kubectl exec -n autoscaler-system deploy/talos-proxmox-autoscaler -- sh -c \
-  'echo "{\"version\":4,\"serial\":0,\"lineage\":\"\",\"outputs\":{},\"resources\":[]}" > /var/lib/tofu/terraform.tfstate'
+# Verify network connectivity
+ping -c 5 10.0.1.10
 ```
 
 ### 9. RBAC Permission Errors

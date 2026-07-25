@@ -28,8 +28,8 @@ The autoscaler operates as a closed control loop that **only manages worker node
                     └──────────┼───────────┘
                                │
                     ┌──────────▼───────────┐
-                    │   OpenTofu Exec      │
-                    │  (apply/destroy)     │
+                    │  Proxmox REST API    │
+                    │  (direct HTTP calls) │
                     └──────────┬───────────┘
                                │
                     ┌──────────▼───────────┐
@@ -81,42 +81,49 @@ node labeled descheduler.kubernetes.io/node-probable-eviction
 
 The autoscaler does not perform its own utilization-based scale-down. Instead, an external descheduler project analyzes node utilization and labels unneeded nodes with `descheduler.kubernetes.io/node-probable-eviction`. The autoscaler watches for this label and handles the actual node removal (cordon, drain, VM destroy).
 
-### 3. OpenTofu Provider
+### 3. Proxmox REST API Client
 
-Executes OpenTofu as a subprocess to manage VM lifecycle on Proxmox.
+Direct HTTP client that manages VM lifecycle on Proxmox using API token authentication.
 
 ```
 ┌─────────────────────────────────────────────┐
-│              OpenTofu State                 │
-│         (encrypted, stored on disk)         │
+│           Proxmox REST API Client           │
 ├─────────────────────────────────────────────┤
 │                                             │
-│  terraform.tfstate                         │
-│  ├── proxmox_vm.talos-worker-0             │
-│  ├── proxmox_vm.talos-worker-1             │
-│  └── ...                                   │
+│  Auth: PVEAPIToken=USER@REALM!TOKENID=SECRET│
+│  Base: https://<proxmox_api_url>/api2/json  │
+│                                             │
+│  Functions:                                 │
+│  ├── CreateVM (clone or from scratch)       │
+│  ├── DeleteVM                               │
+│  ├── StopVM                                 │
+│  ├── GetVMStatus                            │
+│  └── FindVMByName                           │
+│                                             │
+│  VM Naming: {cluster}-worker-{index}        │
+│  VMID Scheme: BASE_VMID + index             │
 │                                             │
 └─────────────────────────────────────────────┘
 ```
 
 **VM Provisioning Flow:**
-1. Generate OpenTofu variables from machine class spec
-2. Run `tofu apply -auto-approve`
-3. OpenTofu creates VM on Proxmox via `proxmox` provider
+1. Generate VM config from machine class spec (CPU, RAM, disk, network)
+2. Call Proxmox API to clone from template or create from scratch
+3. Start the VM via API call
 4. VM PXE-boots Talos Linux, fetching config from remote config server
 5. Talos joins cluster via bootstrap token
 
 **VM Destruction Flow:**
 1. Cordon and drain the node (Kubernetes)
-2. Run `tofu destroy -target=<resource>`
-3. OpenTofu deletes VM from Proxmox
+2. Call Proxmox API to stop the VM
+3. Call Proxmox API to delete the VM
 4. Node disappears from Kubernetes
 
 ### 4. PXE Boot Flow
 
 Workers do **not** use cloud-init or VM templates. Instead:
 
-1. OpenTofu creates a VM with boot order `scsi0;net0`
+1. Controller calls Proxmox API to create a VM with boot order `scsi0;net0`
 2. On first boot, scsi0 has no OS, so the BIOS falls through to PXE on net0
 3. PXE/TFTP serves the Talos kernel and initramfs
 4. The Talos installer fetches machine config from a **remote config server** matching the VM's MAC address prefix
@@ -135,7 +142,7 @@ First boot:                         Subsequent boots:
 
 ### 5. Proxmox Integration
 
-The OpenTofu Proxmox provider communicates with the Proxmox VE REST API using a **dedicated, least-privilege API token**.
+The autoscaler communicates directly with the Proxmox VE REST API using a **dedicated, least-privilege API token**. The client uses `net/http` (Go stdlib) with no external dependencies.
 
 ```
 Proxmox Cluster (3 nodes)
@@ -205,10 +212,10 @@ type MachineDeployment struct {
    capacity are needed (resource-aware sizing)
          │
          ▼
-6. Controller runs tofu apply (new VM resources)
+6. Controller calls Proxmox API to create new VM(s)
          │
          ▼
-7. OpenTofu API call → Proxmox creates VM(s)
+7. Proxmox API call → Proxmox creates VM(s)
          │
          ▼
 8. VM PXE-boots (scsi0 empty → net0 fallback), fetches Talos
@@ -243,10 +250,10 @@ type MachineDeployment struct {
 4. Controller drains the node (pods evicted per PDB rules)
          │
          ▼
-5. Controller runs tofu destroy (target VM)
+5. Controller calls Proxmox API to stop and delete the VM
          │
          ▼
-6. OpenTofu API call → Proxmox deletes VM
+6. Proxmox API call → Proxmox deletes VM
          │
          ▼
 7. Node removed from Kubernetes
@@ -280,14 +287,12 @@ Service CIDR: 10.96.0.0/12
 - **Workers**: scaled dynamically based on unschedulable pod resource requests, always maintain at least `minWorkers` nodes
 - **Node drain**: uses standard Kubernetes grace period (30s default)
 - **Proxmox HA**: VMs marked with Proxmox HA group for automatic restart on node failure
-- **OpenTofu state**: stored encrypted on disk, backed up to S3
 
 ## Failure Modes
 
 | Failure | Impact | Recovery |
 |---------|--------|----------|
 | Proxmox API unreachable | Cannot provision/destroy VMs | Controller retries with exponential backoff |
-| OpenTofu state corruption | Cannot manage VMs | Restore from S3 backup |
 | KEDA metrics unavailable | Scale-up pauses | Falls back to reconciliation-only mode |
 | Descheduler not running | No scale-down occurs | Nodes stay alive; deploy/fix descheduler |
 | Node fails to join cluster | VM exists but unused | Controller detects and destroys after 5m timeout |

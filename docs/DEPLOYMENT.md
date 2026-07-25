@@ -17,7 +17,6 @@ Step-by-step guide for deploying the Talos Kubernetes Node Autoscaler on a 3-nod
 | Tool | Version | Purpose |
 |------|---------|---------|
 | `kubectl` | >= 1.29 | Cluster management |
-| `tofu` | >= 1.6 | Infrastructure provisioning |
 | `talosctl` | matching Talos version | Talos cluster management |
 | `go` | >= 1.22 | Building the autoscaler |
 | `make` | any | Build automation |
@@ -84,6 +83,8 @@ Edit `config/.env`:
 # Proxmox
 PROXMOX_API_URL="https://10.0.1.10:8006"
 PROXMOX_INSECURE=true  # only if using self-signed certs
+PROXMOX_NODE="pve-1"
+BASE_VMID=200
 
 # Cluster
 CONTROL_PLANE_ENDPOINT="https://10.0.2.10:6443"
@@ -114,10 +115,6 @@ K8S_BRIDGE="vmbr1"
 K8S_SUBNET="10.0.2.0/24"
 POD_CIDR="10.244.0.0/16"
 SERVICE_CIDR="10.96.0.0/12"
-
-# OpenTofu state (encrypted at rest)
-TOFU_STATE_DIR="/var/lib/tofu"
-TOFU_STATE_ENCRYPTION="aes256"
 ```
 
 ## Step 4: Create a Dedicated Proxmox API User
@@ -334,15 +331,15 @@ If the descheduler is not deployed, no automatic scale-down will occur — worke
 # Build the container image
 make docker-build
 
-# Push to your registry (or use local registry)
-docker tag autoscaler:latest registry.internal/talos-autoscaler:v1.0.0
-docker push registry.internal/talos-autoscaler:v1.0.0
+# Push to GitHub Container Registry
+docker tag autoscaler:latest ghcr.io/your-org/talos-proxmox-autoscaler:v1.0.0
+docker push ghcr.io/your-org/talos-proxmox-autoscaler:v1.0.0
 ```
 
 Deploy:
 ```bash
 # Update image reference in manifest
-export IMAGE="registry.internal/talos-autoscaler:v1.0.0"
+export IMAGE="ghcr.io/your-org/talos-proxmox-autoscaler:v1.0.0"
 
 envsubst < kubernetes/deployment.yaml | kubectl apply -f -
 
@@ -426,9 +423,6 @@ See `.github/workflows/` for the full workflow definitions.
 Required GitHub Secrets:
 - `PROXMOX_API_TOKEN_ID`
 - `PROXMOX_API_TOKEN_SECRET`
-- `REGISTRY_URL`
-- `REGISTRY_USERNAME`
-- `REGISTRY_PASSWORD`
 
 ## Step 14: Monitoring
 
@@ -483,13 +477,6 @@ groups:
 - Environment variables are visible via `kubectl describe pod` and can leak into logs
 - The deployment mounts secrets at `/etc/secrets/` with `readOnlyRootFilesystem: true`
 
-### OpenTofu State
-
-- **Never store state in an unencrypted ConfigMap** — ConfigMaps are base64-encoded, not encrypted
-- Store state on an encrypted volume or use an encrypted backend (S3 with SSE, GCS with CMEK)
-- The deployment uses an `emptyDir` volume with encryption at rest (if the cluster supports it)
-- For production, configure S3 backend with server-side encryption
-
 ### Network Security
 
 - Deploy a `NetworkPolicy` to restrict autoscaler traffic to Proxmox API only
@@ -523,7 +510,6 @@ The deployment already includes:
 - [ ] KEDA scalers are active
 - [ ] Descheduler deployed (if scale-down is desired)
 - [ ] Secrets mounted as files (not env vars)
-- [ ] OpenTofu state stored securely
 - [ ] Test scale-up produces a new worker node
 - [ ] Test scale-down destroys a worker node (requires descheduler label)
 - [ ] Prometheus metrics endpoint responds

@@ -39,49 +39,33 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            # ponytail: secrets mounted as files, not env vars
-            # Env vars leak into `kubectl describe pod` and logs
             - name: PROXMOX_API_TOKEN_ID_FILE
               value: "/etc/secrets/proxmox_api_token_id"
             - name: PROXMOX_API_TOKEN_SECRET_FILE
               value: "/etc/secrets/proxmox_api_token_secret"
-            - name: CLUSTER_TOKEN_FILE
-              value: "/etc/secrets/cluster_token"
-            - name: CA_CERT_B64_FILE
-              value: "/etc/secrets/ca_cert_b64"
             - name: PROXMOX_API_URL
               valueFrom:
                 configMapKeyRef:
                   name: autoscaler-config
                   key: proxmox_api_url
-                  optional: true
+            - name: PROXMOX_NODE
+              valueFrom:
+                configMapKeyRef:
+                  name: autoscaler-config
+                  key: proxmox_node
             - name: PROXMOX_INSECURE
               valueFrom:
                 configMapKeyRef:
                   name: autoscaler-config
                   key: proxmox_insecure
                   optional: true
-            - name: TALOS_VERSION
+            - name: BASE_VMID
               valueFrom:
                 configMapKeyRef:
                   name: autoscaler-config
-                  key: talos_version
-                  optional: true
-            - name: MIN_WORKERS
-              valueFrom:
-                configMapKeyRef:
-                  name: autoscaler-config
-                  key: min_workers
-                  optional: true
-            - name: MAX_WORKERS
-              valueFrom:
-                configMapKeyRef:
-                  name: autoscaler-config
-                  key: max_workers
+                  key: base_vmid
                   optional: true
           volumeMounts:
-            - name: tofu-state
-              mountPath: /var/lib/tofu
             - name: secrets
               mountPath: /etc/secrets
               readOnly: true
@@ -99,8 +83,6 @@ spec:
               cpu: 500m
               memory: 512Mi
       volumes:
-        - name: tofu-state
-          emptyDir: {}
         - name: secrets
           secret:
             secretName: autoscaler-secrets

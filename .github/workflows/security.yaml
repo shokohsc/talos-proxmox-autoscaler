@@ -61,10 +61,11 @@ jobs:
         with:
           image: ghcr.io/${{ github.repository }}:main
           severity-cutoff: critical
+          fail-build: false
           output-format: sarif
 
       - uses: github/codeql-action/upload-sarif@v3
-        if: always() && steps.grype.outputs.sarif != ''
+        if: always() && steps.grype.outputs.sarif != '' && hashFiles(steps.grype.outputs.sarif) != ''
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 

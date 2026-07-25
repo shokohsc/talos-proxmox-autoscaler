@@ -1,6 +1,6 @@
 # Talos Kubernetes Node Autoscaler for Proxmox
 
-Autoscale Talos Linux Kubernetes **worker** nodes on a Proxmox VE cluster using KEDA, OpenTofu, and a custom Go controller.
+Autoscale Talos Linux Kubernetes **worker** nodes on a Proxmox VE cluster using KEDA and a custom Go controller.
 
 ## What This Does
 
@@ -22,8 +22,8 @@ Scale range: **1–20 workers** (configurable). Three control plane nodes run pe
 │                    Kubernetes Cluster                     │
 │                                                          │
 │  ┌──────────┐    ┌──────────────┐    ┌───────────────┐  │
-│  │   KEDA   │───▶│  Go Node     │───▶│  OpenTofu     │  │
-│  │ Scaler   │    │  Autoscaler  │    │  Provider     │  │
+│  │   KEDA   │───▶│  Go Node     │───▶│  Proxmox      │  │
+│  │ Scaler   │    │  Autoscaler  │    │  REST API     │  │
 │  └──────────┘    └──────────────┘    └───────┬───────┘  │
 │       ▲                                       │          │
 │       │ watches                              │ provisions│
@@ -48,7 +48,6 @@ Scale range: **1–20 workers** (configurable). Three control plane nodes run pe
 - Proxmox VE 8.x cluster (3 nodes)
 - Talos Linux ISO uploaded to Proxmox
 - Kubernetes cluster with 3 permanent control planes
-- OpenTofu >= 1.6
 - Go >= 1.22
 - kubectl configured for target cluster
 - PXE boot infrastructure with a Talos config server
@@ -93,15 +92,12 @@ kubectl get pods -n kube-system -l app=talos-node-autoscaler
 ├── autoscaler/              # Go autoscaler entrypoint
 │   └── pkg/
 │       ├── autoscaler/      # Core autoscaling logic
-│       └── tofu/            # OpenTofu integration
+│       └── proxmox/         # Proxmox REST API client
 ├── kubernetes/
 │   ├── crds/                # CRD manifests
 │   ├── rbac/                # RBAC manifests
 │   ├── keda/                # KEDA ScaledObject manifests
 │   └── deployment.yaml      # Controller deployment
-├── terraform/               # OpenTofu modules
-│   └── modules/
-│       └── proxmox-vm/      # VM provisioning module
 ├── examples/
 │   ├── machine-classes/     # Example MachineClass CRs
 │   └── 3-node-cluster/      # Full cluster example
@@ -142,7 +138,6 @@ This project handles infrastructure provisioning secrets. Key security measures:
 
 - **Dedicated Proxmox API user** — never use `root@pam` for the autoscaler
 - **Secrets mounted as files**, not environment variables
-- **OpenTofu state encrypted at rest** — never store in an unencrypted ConfigMap
 - **Least-privilege RBAC** — the autoscaler service account has minimal permissions
 - **Network policies** restrict autoscaler traffic to Proxmox API only
 

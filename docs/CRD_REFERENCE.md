@@ -197,7 +197,7 @@ Pending → Provisioning → Joining → Ready → Deleting → (removed)
 
 | Phase | Description |
 |-------|-------------|
-| `Pending` | Waiting for OpenTofu to start |
+| `Pending` | Waiting for VM creation to start |
 | `Provisioning` | VM being created on Proxmox |
 | `Joining` | VM running, PXE-booting, Talos joining cluster |
 | `Ready` | Node is Ready and accepting workloads |
@@ -315,7 +315,7 @@ The autoscaler follows this logic:
 1. Watch for nodes labeled descheduler.kubernetes.io/node-probable-eviction
 2. Cordon the labeled node
 3. Drain the node (respect PDBs)
-4. Destroy the VM via OpenTofu
+4. Destroy the VM via Proxmox API
 ```
 
 The autoscaler does not perform its own utilization-based scale-down — that is the descheduler's job. This separation keeps the autoscaler focused on capacity (can we fit the pods?) while the descheduler handles efficiency (are we wasting resources?).
