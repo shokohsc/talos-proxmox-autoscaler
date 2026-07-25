@@ -70,13 +70,16 @@ jobs:
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 
-  kubeval:
-    name: Kubeval
+  kubeconform:
+    name: Kubeconform
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: instrumenta/kubeval-action@master
+      - uses: yannh/kubeconform-action@master
         with:
-          files: kubernetes/
+          output_format: pretty
           strict: true
+          kubernetes_version: "1.30.0"
+          files: kubernetes/
+          skip: CustomResourceDefinition

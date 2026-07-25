@@ -134,7 +134,7 @@ kubectl get pods -n autoscaler-system
 GitHub Actions workflows (`.github/workflows/`) handle:
 - **ci.yaml** — Lint, test, build on PRs; build + push to `ghcr.io` on main push
 - **release.yaml** — On `v*` tags: multi-arch build, push to GHCR, cosign sign, SBOM, GitHub Release
-- **security.yaml** — Grype image scans, CodeQL, dependency review
+- **security.yaml** — Grype image scans, CodeQL, dependency review, kubeconform
 
 ## License
 
