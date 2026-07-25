@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"k8s.io/klog/v2"
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/talos-proxmox-autoscaler/pkg/autoscaler"
+	"github.com/talos-proxmox-autoscaler/pkg/tofu"
 )
 
 func main() {
@@ -28,9 +34,9 @@ func main() {
 
 	klog.Info("Starting talos-proxmox-autoscaler")
 
-	ctrlManager, err := manager.New(manager.GetConfigOrDie(), manager.Options{
+	ctrlManager, err := manager.New(config.GetConfigOrDie(), manager.Options{
 		Scheme:                 autoscaler.NewScheme(),
-		MetricsBindAddress:     metricsAddr,
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "talos-proxmox-autoscaler.lock",
@@ -39,8 +45,25 @@ func main() {
 		klog.Fatalf("Unable to create manager: %v", err)
 	}
 
-	if err := autoscaler.SetupReconciler(ctrlManager); err != nil {
-		klog.Fatalf("Unable to setup reconciler: %v", err)
+	tofuClient := tofu.NewClient("tofu", "/var/lib/tofu")
+
+	restConfig := ctrlManager.GetConfig()
+	kubeClient, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		klog.Fatalf("Unable to create kubernetes client: %v", err)
+	}
+
+	reconciler := &autoscaler.MachineDeploymentReconciler{
+		Client:     ctrlManager.GetClient(),
+		Scheme:     ctrlManager.GetScheme(),
+		TofuClient: tofuClient,
+		KubeClient: kubeClient,
+	}
+
+	if err := builder.ControllerManagedBy(ctrlManager).
+		For(&autoscaler.MachineDeployment{}).
+		Complete(reconciler); err != nil {
+		klog.Fatalf("Unable to setup controller: %v", err)
 	}
 
 	if err := ctrlManager.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -50,7 +73,7 @@ func main() {
 		klog.Fatalf("Unable to set up ready check: %v", err)
 	}
 
-	ctx, cancel := signal.NotifyContext(ctrlManager.GetContext(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	if err := ctrlManager.Start(ctx); err != nil {

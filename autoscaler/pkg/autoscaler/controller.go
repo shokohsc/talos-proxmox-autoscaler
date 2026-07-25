@@ -3,6 +3,7 @@ package autoscaler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,7 +36,7 @@ type MachineDeploymentReconciler struct {
 	KubeClient kubernetes.Interface
 }
 
-func (r *MachineDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {
+func (r *MachineDeploymentReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	log := klog.FromContext(ctx)
 
 	var deployment MachineDeployment
@@ -214,7 +215,7 @@ func (r *MachineDeploymentReconciler) findDeschedulerEvictableNodes(ctx context.
 	prefix := fmt.Sprintf("%s-worker-", clusterName)
 
 	for _, node := range nodeList.Items {
-		if !node.Name.HasPrefix(prefix) {
+		if !strings.HasPrefix(node.Name, prefix) {
 			continue
 		}
 		if labels.Set(node.Labels).Has(deschedulerLabel) {

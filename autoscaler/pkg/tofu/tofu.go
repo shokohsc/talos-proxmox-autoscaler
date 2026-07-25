@@ -54,13 +54,13 @@ func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) 
 	log := klog.FromContext(ctx)
 
 	vars := map[string]string{
-		"cluster_name":    config.ClusterName,
-		"vm_index":        fmt.Sprintf("%d", config.VMIndex),
-		"vcpu":            fmt.Sprintf("%d", config.VCPU),
-		"memory_gib":      fmt.Sprintf("%d", config.MemoryGiB),
-		"disk_gib":        fmt.Sprintf("%d", config.DiskGiB),
-		"network_bridge":  config.NetworkBridge,
-		"storage_pool":    config.StoragePool,
+		"cluster_name":   config.ClusterName,
+		"vm_index":       fmt.Sprintf("%d", config.VMIndex),
+		"vcpu":           fmt.Sprintf("%d", config.VCPU),
+		"memory_gib":     fmt.Sprintf("%d", config.MemoryGiB),
+		"disk_gib":       fmt.Sprintf("%d", config.DiskGiB),
+		"network_bridge": config.NetworkBridge,
+		"storage_pool":   config.StoragePool,
 	}
 	if config.MACAddress != "" {
 		vars["mac_address"] = config.MACAddress
@@ -69,7 +69,7 @@ func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) 
 		vars["serial"] = config.Serial
 	}
 
-	if err := c.run(ctx, "apply", "-auto-approve", "-var", vars); err != nil {
+	if err := c.run(ctx, append([]string{"apply", "-auto-approve"}, flattenVars(vars)...)...); err != nil {
 		return "", fmt.Errorf("tofu apply failed: %w", err)
 	}
 
@@ -93,7 +93,7 @@ func (c *Client) DeleteVM(ctx context.Context, clusterName string, vmIndex int) 
 		"vm_index":     fmt.Sprintf("%d", vmIndex),
 	}
 
-	if err := c.run(ctx, "destroy", "-auto-approve", "-var", vars); err != nil {
+	if err := c.run(ctx, append([]string{"destroy", "-auto-approve"}, flattenVars(vars)...)...); err != nil {
 		return fmt.Errorf("tofu destroy failed: %w", err)
 	}
 
@@ -111,12 +111,20 @@ func (c *Client) Destroy(ctx context.Context, clusterName string) error {
 		"cluster_name": clusterName,
 	}
 
-	if err := c.run(ctx, "destroy", "-auto-approve", "-var", vars); err != nil {
+	if err := c.run(ctx, append([]string{"destroy", "-auto-approve"}, flattenVars(vars)...)...); err != nil {
 		return fmt.Errorf("tofu destroy all failed: %w", err)
 	}
 
 	log.Info("All worker VMs destroyed", "cluster", clusterName)
 	return nil
+}
+
+func flattenVars(vars map[string]string) []string {
+	args := make([]string, 0, len(vars)*2)
+	for k, v := range vars {
+		args = append(args, "-var", fmt.Sprintf("%s=%s", k, v))
+	}
+	return args
 }
 
 func (c *Client) run(ctx context.Context, args ...string) error {

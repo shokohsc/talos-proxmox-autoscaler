@@ -109,3 +109,108 @@ var _ runtime.Object = &MachineClassList{}
 func (md *MachineDeployment) GetConditions() []corev1.NodeCondition {
 	return nil
 }
+
+func (in *MachineDeployment) DeepCopy() *MachineDeployment {
+	if in == nil {
+		return nil
+	}
+	out := new(MachineDeployment)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *MachineDeployment) DeepCopyInto(out *MachineDeployment) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = in.Spec
+	out.Status = in.Status
+}
+
+func (in *MachineDeployment) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *MachineDeploymentList) DeepCopy() *MachineDeploymentList {
+	if in == nil {
+		return nil
+	}
+	out := new(MachineDeploymentList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *MachineDeploymentList) DeepCopyInto(out *MachineDeploymentList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]MachineDeployment, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *MachineDeploymentList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *MachineClass) DeepCopy() *MachineClass {
+	if in == nil {
+		return nil
+	}
+	out := new(MachineClass)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *MachineClass) DeepCopyInto(out *MachineClass) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
+	out.Spec = in.Spec
+}
+
+func (in *MachineClass) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
+
+func (in *MachineClassList) DeepCopy() *MachineClassList {
+	if in == nil {
+		return nil
+	}
+	out := new(MachineClassList)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *MachineClassList) DeepCopyInto(out *MachineClassList) {
+	*out = *in
+	out.TypeMeta = in.TypeMeta
+	in.ListMeta.DeepCopyInto(&out.ListMeta)
+	if in.Items != nil {
+		in, out := &in.Items, &out.Items
+		*out = make([]MachineClass, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
+}
+
+func (in *MachineClassList) DeepCopyObject() runtime.Object {
+	if c := in.DeepCopy(); c != nil {
+		return c
+	}
+	return nil
+}
