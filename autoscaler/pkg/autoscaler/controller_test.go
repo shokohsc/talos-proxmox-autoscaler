@@ -23,30 +23,76 @@ func TestCalculateNeeded(t *testing.T) {
 	cfg := &Config{MinWorkers: 1, MaxCPU: 4, MaxMemoryGiB: 8}
 
 	t.Run("no pending pods returns min workers", func(t *testing.T) {
-		got := r.calculateNeeded(resource.Quantity{}, resource.Quantity{}, 0, cfg)
+		got, _ := r.calculateNeeded(resource.Quantity{}, resource.Quantity{}, 0, cfg)
 		assert.Equal(t, int32(1), got)
 	})
 
 	t.Run("cpu-driven scaling", func(t *testing.T) {
 		// 20 millicpu pending, 4 CPU cap => ceil(20/4000) = 1
 		pendingCPU := resource.MustParse("20m")
-		got := r.calculateNeeded(pendingCPU, resource.Quantity{}, 1, cfg)
+		got, _ := r.calculateNeeded(pendingCPU, resource.Quantity{}, 1, cfg)
 		assert.Equal(t, int32(1), got)
 	})
 
 	t.Run("mem-driven scaling", func(t *testing.T) {
 		// 20Gi pending, 8Gi cap => ceil(20/8) = 3
 		pendingMem := resource.MustParse("20Gi")
-		got := r.calculateNeeded(resource.Quantity{}, pendingMem, 1, cfg)
+		got, _ := r.calculateNeeded(resource.Quantity{}, pendingMem, 1, cfg)
 		assert.Equal(t, int32(3), got)
 	})
 
 	t.Run("takes max of cpu and mem", func(t *testing.T) {
 		pendingCPU := resource.MustParse("32")  // 32 CPU => 8 workers
 		pendingMem := resource.MustParse("64Gi") // 64Gi => 8 workers
-		got := r.calculateNeeded(pendingCPU, pendingMem, 10, cfg)
+		got, _ := r.calculateNeeded(pendingCPU, pendingMem, 10, cfg)
 		assert.Equal(t, int32(8), got)
 	})
+}
+
+func TestCalculateVMSize(t *testing.T) {
+	config := &Config{
+		MinWorkers:   1,
+		MaxWorkers:   10,
+		MinCPU:       2,
+		MaxCPU:       8,
+		MinMemoryGiB: 4,
+		MaxMemoryGiB: 16,
+	}
+
+	// 20 CPU, 40 GiB pending
+	size := calculateVMSize(20, 40, 3, config)
+	assert.Equal(t, 7, size.CPU)        // 20/3 → ceiling = 7
+	assert.Equal(t, 14, size.MemoryGiB) // 40/3 → ceiling = 14
+}
+
+func TestCalculateVMSize_Clamps(t *testing.T) {
+	config := &Config{
+		MinWorkers:   1,
+		MaxWorkers:   10,
+		MinCPU:       2,
+		MaxCPU:       8,
+		MinMemoryGiB: 4,
+		MaxMemoryGiB: 16,
+	}
+
+	// 100 CPU, 100 GiB pending, only 1 VM allowed
+	size := calculateVMSize(100, 100, 1, config)
+	assert.Equal(t, 8, size.CPU)        // clamped to max
+	assert.Equal(t, 16, size.MemoryGiB) // clamped to max
+}
+
+func TestCalculateVMSize_ClampsToMin(t *testing.T) {
+	config := &Config{
+		MinCPU:       4,
+		MaxCPU:       8,
+		MinMemoryGiB: 8,
+		MaxMemoryGiB: 16,
+	}
+
+	// tiny resources, many VMs → clamped to min
+	size := calculateVMSize(2, 2, 10, config)
+	assert.Equal(t, 4, size.CPU)
+	assert.Equal(t, 8, size.MemoryGiB)
 }
 
 func TestReadConfigNewKeys(t *testing.T) {

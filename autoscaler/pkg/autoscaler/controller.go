@@ -86,12 +86,12 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 
 	currentWorkers := r.countWorkers(ctx, cfg.ClusterName)
-	workersNeeded := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
+	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
 
 	if workersNeeded > currentWorkers {
-		klog.Info("Scaling up", "current", currentWorkers, "desired", workersNeeded)
-		r.scaleUp(ctx, currentWorkers, workersNeeded, cfg)
+		klog.Info("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
+		r.scaleUp(ctx, currentWorkers, workersNeeded, vmSize, cfg)
 	} else if workersNeeded < currentWorkers && unschedulableCount == 0 {
 		klog.Info("Scaling down", "current", currentWorkers, "desired", workersNeeded)
 		r.scaleDown(ctx, currentWorkers, workersNeeded, cfg.ClusterName)
@@ -165,9 +165,9 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 	return totalCPU, totalMem, count, nil
 }
 
-func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, pendingPods int, cfg *Config) int32 {
+func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, pendingPods int, cfg *Config) (int32, VMSize) {
 	if pendingPods == 0 {
-		return cfg.MinWorkers
+		return cfg.MinWorkers, VMSize{}
 	}
 	cpuCap := resource.MustParse(fmt.Sprintf("%d", cfg.MaxCPU))
 	memCap := resource.MustParse(fmt.Sprintf("%dGi", cfg.MaxMemoryGiB))
@@ -186,7 +186,12 @@ func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, p
 	if needed < 1 {
 		needed = 1
 	}
-	return needed
+
+	totalCPU := int(pendingCPU.MilliValue()) / 1000
+	totalMem := int(pendingMem.Value()) / (1024 * 1024 * 1024)
+	size := calculateVMSize(totalCPU, totalMem, int(needed), cfg)
+
+	return needed, size
 }
 
 func (r *Reconciler) countWorkers(ctx context.Context, clusterName string) int32 {
@@ -219,7 +224,7 @@ func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string)
 	return evictable, nil
 }
 
-func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, cfg *Config) {
+func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size VMSize, cfg *Config) {
 	for i := current; i < desired; i++ {
 		vmid := r.BaseVMID + int(i)
 		vmName := fmt.Sprintf("%s-worker-%d", cfg.ClusterName, i)
@@ -228,8 +233,8 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, cfg *C
 		ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 			Name:          vmName,
 			VMID:          vmid,
-			VCPU:          int32(cfg.MaxCPU),
-			MemoryMiB:     int32(cfg.MaxMemoryGiB) * 1024,
+			VCPU:          int32(size.CPU),
+			MemoryMiB:     int32(size.MemoryGiB) * 1024,
 			DiskGiB:       cfg.DiskGiB,
 			StoragePool:   cfg.StoragePool,
 			NetworkBridge: cfg.NetworkBridge,
@@ -327,6 +332,18 @@ func clamp(v, min, max int32) int32 {
 		return max
 	}
 	return v
+}
+
+func calculateVMSize(totalCPU, totalMemory, vmCount int, config *Config) VMSize {
+	if vmCount <= 0 {
+		vmCount = 1
+	}
+	cpu := (totalCPU + vmCount - 1) / vmCount
+	mem := (totalMemory + vmCount - 1) / vmCount
+	return VMSize{
+		CPU:       clampInt(cpu, config.MinCPU, config.MaxCPU),
+		MemoryGiB: clampInt(mem, config.MinMemoryGiB, config.MaxMemoryGiB),
+	}
 }
 
 func clampInt(v, min, max int) int {
