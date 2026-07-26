@@ -112,22 +112,37 @@ kubectl get pods -n kube-system -l app=talos-node-autoscaler
 └── .github/workflows/       # CI/CD pipelines
 ```
 
-## Machine Configuration (ConfigMap)
+## Autoscaler Configuration
 
-VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-config` in the `autoscaler-system` namespace. Keys map directly to controller fields:
+### ConfigMap Fields
 
-| Key | Description |
-|-----|-------------|
-| `vcpu` | Number of virtual CPUs |
-| `memory_gib` | Memory in GiB |
-| `disk_gib` | Disk size in GiB |
-| `storage_pool` | Proxmox storage pool |
-| `network_bridge` | Proxmox bridge name |
-| `mac_address` | MAC address for PXE config lookup (optional) |
-| `serial` | SMBIOS serial for identification (optional) |
-| `cluster_name` | Kubernetes cluster name |
-| `min_workers` | Minimum worker count |
-| `max_workers` | Maximum worker count |
+VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-config` in the `autoscaler-system` namespace.
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| cluster_name | Name prefix for VMs | (required) |
+| min_workers | Minimum VM count | 1 |
+| max_workers | Maximum VM count | 10 |
+| min_cpu | Minimum CPU per VM | 2 |
+| max_cpu | Maximum CPU per VM | 8 |
+| min_memory_gib | Minimum memory per VM | 4 |
+| max_memory_gib | Maximum memory per VM | 16 |
+| disk_gib | Disk size per VM | 50 |
+| storage_pool | Proxmox storage pool | (required) |
+| network_bridge | Network bridge | (required) |
+| tags | Space-separated VM tags | (optional) |
+| pci_devices | JSON array of PCI devices | (optional) |
+
+### Secrets
+
+Proxmox credentials are stored in a Kubernetes Secret. Two authentication methods are supported:
+
+| Field | Description |
+|-------|-------------|
+| proxmox_username | Proxmox username (triggers password auth) |
+| proxmox_password | Proxmox password (triggers password auth) |
+| proxmox_api_token_id | API token ID (triggers token auth) |
+| proxmox_api_token_secret | API token secret |
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
