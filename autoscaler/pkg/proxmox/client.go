@@ -167,6 +167,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	klog.V(3).Info("Proxmox API call", "method", method, "url", req.URL.Path, "status", resp.StatusCode)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -186,6 +187,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 
 func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) {
 	log := klog.FromContext(ctx)
+	klog.V(1).Info("Creating VM", "vmid", config.VMID, "name", config.Name, "cpu", config.VCPU, "memory_mib", config.MemoryMiB)
 
 	if config.TemplateID > 0 {
 		if err := c.cloneVM(ctx, config); err != nil {

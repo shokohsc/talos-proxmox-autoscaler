@@ -75,10 +75,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
+	klog.V(2).Info("Config loaded", "cluster", cfg.ClusterName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 
 	evicted, err := r.findEvictableNodes(ctx, cfg.ClusterName)
 	if err != nil {
 		return err
+	}
+	if len(evicted) > 0 {
+		klog.V(1).Info("Found evictable nodes", "count", len(evicted))
 	}
 	for _, node := range evicted {
 		klog.Info("Removing descheduler-evicted node", "node", node.Name)
@@ -89,10 +93,12 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	klog.V(2).Info("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "count", unschedulableCount)
 
 	currentWorkers := r.countWorkers(ctx, cfg.ClusterName)
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
+	klog.V(2).Info("Scale decision", "current", currentWorkers, "needed", workersNeeded, "vm_size", vmSize)
 
 	if workersNeeded > currentWorkers {
 		klog.Info("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)

@@ -18,7 +18,14 @@ import (
 
 func main() {
 	flag.Parse()
-	klog.Info("Starting talos-proxmox-autoscaler")
+
+	logLevel := getEnv("LOG_LEVEL", "info")
+	verbosity := logLevelToVerbosity(logLevel)
+	klog.InitFlags(nil)
+	flag.Set("v", strconv.Itoa(verbosity))
+	flag.Parse()
+
+	klog.Info("Starting talos-proxmox-autoscaler", "log_level", logLevel)
 
 	proxmoxURL := getEnv("PROXMOX_API_URL", "https://pve.example.com:8006")
 	proxmoxNode := getEnv("PROXMOX_NODE", "pve")
@@ -31,6 +38,8 @@ func main() {
 	if baseVMID == 0 {
 		baseVMID = 2000
 	}
+
+	klog.V(1).Info("Proxmox configuration", "url", proxmoxURL, "node", proxmoxNode, "insecure", insecure)
 
 	proxmoxClient, err := proxmox.NewClient(proxmoxURL, username, password, tokenID, tokenSecret, proxmoxNode, insecure)
 	if err != nil {
@@ -47,6 +56,7 @@ func main() {
 	}
 
 	namespace := getEnv("NAMESPACE", "autoscaler-system")
+	klog.V(1).Info("Controller configuration", "namespace", namespace, "base_vmid", baseVMID)
 
 	r := &autoscaler.Reconciler{
 		Proxmox:    proxmoxClient,
@@ -59,6 +69,23 @@ func main() {
 	defer cancel()
 
 	r.Start(ctx)
+}
+
+// logLevelToVerbosity maps log level names to klog verbosity.
+// klog verbosity: 0=info+, 1=info, 2=debug, 3=trace
+func logLevelToVerbosity(level string) int {
+	switch level {
+	case "trace":
+		return 3
+	case "debug":
+		return 2
+	case "info":
+		return 1
+	case "warn", "error":
+		return 0
+	default:
+		return 1
+	}
 }
 
 func readFile(path string) string {
