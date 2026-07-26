@@ -146,6 +146,91 @@ func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
 	assert.Equal(t, "PVEticket", c.ticket)
 }
 
+func TestListNodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{
+				{Node: "pve2", Status: "online"},
+				{Node: "pve1", Status: "online"},
+				{Node: "pve3", Status: "offline"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	assert.NoError(t, err)
+
+	nodes, err := c.ListNodes(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"pve1", "pve2"}, nodes)
+}
+
+func TestListNodes_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	assert.NoError(t, err)
+
+	nodes, err := c.ListNodes(context.Background())
+	assert.NoError(t, err)
+	assert.Empty(t, nodes)
+}
+
+func TestGetNode_Configured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be called when node is configured")
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve1", true)
+	assert.NoError(t, err)
+
+	node, err := c.GetNode(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "pve1", node)
+}
+
+func TestGetNode_AutoDiscover(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{
+				{Node: "pve2", Status: "online"},
+				{Node: "pve1", Status: "online"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	assert.NoError(t, err)
+
+	node, err := c.GetNode(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "pve1", node) // first after sort
+}
+
+func TestGetNode_NoNodes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	assert.NoError(t, err)
+
+	_, err = c.GetNode(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no active nodes")
+}
+
 func TestPasswordAuth_CachesTicket(t *testing.T) {
 	loginCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

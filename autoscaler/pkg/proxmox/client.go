@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,15 @@ type VMConfig struct {
 	MACAddress    string
 	Serial        string
 	TemplateID    int
+}
+
+type Node struct {
+	Node      string  `json:"node"`
+	Status    string  `json:"status"`
+	CPU       float64 `json:"cpu"`
+	MaxCPU    int     `json:"maxcpu"`
+	Memory    int     `json:"mem"`
+	MaxMemory int     `json:"maxmem"`
 }
 
 type apiResponse struct {
@@ -375,4 +385,40 @@ func (c *Client) waitForTask(ctx context.Context, upid string) error {
 		}
 	}
 	return fmt.Errorf("timeout waiting for task %s", upid)
+}
+
+func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
+	data, err := c.do(ctx, "GET", "/api2/json/nodes", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var nodes []Node
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil, err
+	}
+
+	var online []string
+	for _, n := range nodes {
+		if n.Status == "online" {
+			online = append(online, n.Node)
+		}
+	}
+	sort.Strings(online)
+	return online, nil
+}
+
+func (c *Client) GetNode(ctx context.Context) (string, error) {
+	if c.node != "" {
+		return c.node, nil
+	}
+
+	nodes, err := c.ListNodes(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(nodes) == 0 {
+		return "", fmt.Errorf("no active nodes found")
+	}
+	return nodes[0], nil
 }
