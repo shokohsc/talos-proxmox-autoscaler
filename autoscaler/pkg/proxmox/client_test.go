@@ -363,3 +363,53 @@ func TestCreateVMFromScratch_MultiplePCI(t *testing.T) {
 	assert.Contains(t, gotQuery, "hostpci0")
 	assert.Contains(t, gotQuery, "hostpci1")
 }
+
+func TestCreateVMFromScratch_VLANID(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		VLANID:        100,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "net0")
+	assert.Contains(t, gotQuery, "tag%3D100")
+}
+
+func TestCreateVMFromScratch_NoVLANWhenZero(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		VLANID:        0,
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "net0")
+	assert.NotContains(t, gotQuery, "tag")
+}

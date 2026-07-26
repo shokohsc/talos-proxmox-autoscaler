@@ -139,6 +139,7 @@ data:
   proxmox_api_url: "https://pve.example.com:8006"  # Proxmox API endpoint
   base_vmid: "2000"              # Starting VMID for new workers
   tags: "autoscaler,worker"      # Tags applied to provisioned VMs
+  vlan_id: "0"                   # VLAN tag for primary interface (0 = no tag)
   pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'  # Optional PCI passthrough
 ```
 

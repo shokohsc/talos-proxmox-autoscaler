@@ -212,6 +212,9 @@ data:
   # Optional: PCI passthrough devices (JSON array)
   # pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'
 
+  # Optional: VLAN tag for primary network interface
+  vlan_id: "0"
+
   # Scaling
   cluster_name: "k8s"
   min_workers: "1"

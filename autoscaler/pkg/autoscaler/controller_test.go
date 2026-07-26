@@ -205,6 +205,35 @@ func TestReadConfigPCIDevicesEmpty(t *testing.T) {
 	assert.Nil(t, cfg.PCIDevices)
 }
 
+func TestReadConfigVLANID(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+			"vlan_id":      "100",
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 100, cfg.VLANID)
+}
+
+func TestReadConfigVLANIDDefault(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, cfg.VLANID)
+}
+
 func TestReadConfigNewKeysOverrideLegacy(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},

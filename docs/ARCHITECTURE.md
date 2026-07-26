@@ -177,6 +177,7 @@ type Config struct {
     MACAddress    string
     Serial        string
     Tags          string          // Tags applied to provisioned VMs
+    VLANID        int             // VLAN tag for primary network interface
     PCIDevices   []proxmox.PCIDevice  // PCI passthrough devices
 }
 
