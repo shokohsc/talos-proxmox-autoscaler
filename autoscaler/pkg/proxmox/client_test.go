@@ -62,7 +62,7 @@ func TestLogin_Success(t *testing.T) {
 			}
 			gotUser = r.FormValue("username")
 			gotPass = r.FormValue("password")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{
 					"ticket":              "PVEticket123",
 					"CSRFPreventionToken": "csrf456",
@@ -87,7 +87,7 @@ func TestLogin_Success(t *testing.T) {
 func TestLogin_ServerError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"errors":{"username":"invalid"}}`))
+		_, _ = w.Write([]byte(`{"errors":{"username":"invalid"}}`))
 	}))
 	defer srv.Close()
 
@@ -113,7 +113,7 @@ func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/access/ticket" {
 			ticketRequested = true
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{
 					"ticket":              "PVEticket",
 					"CSRFPreventionToken": "csrf",
@@ -126,10 +126,10 @@ func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
 		csrf := r.Header.Get("CSRFPreventionToken")
 		if cookie != "PVEAuthCookie=PVEticket" || csrf != "csrf" {
 			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"data":null}`))
+			_, _ = w.Write([]byte(`{"data":null}`))
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": json.RawMessage(`{"version":"8.1.4"}`),
 		})
 	}))
