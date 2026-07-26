@@ -2,7 +2,6 @@ package autoscaler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,12 +28,6 @@ type VMSize struct {
 	MemoryGiB int
 }
 
-type PCIDevice struct {
-	ID   string `json:"id"`
-	PCIe bool   `json:"pcie"`
-	GPU  bool   `json:"gpu"`
-}
-
 type Config struct {
 	ClusterName   string
 	MinWorkers    int32
@@ -48,8 +41,6 @@ type Config struct {
 	NetworkBridge string
 	MACAddress    string
 	Serial        string
-	Tags          string
-	PCIDevices    []PCIDevice
 }
 
 type Reconciler struct {
@@ -116,26 +107,29 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 	}
 	d := cm.Data
 
+	// ponytail: backward-compat fallbacks for pre-v0.3 ConfigMap keys
+	maxCPU := d["max_cpu"]
+	if maxCPU == "" {
+		maxCPU = d["vcpu"]
+	}
+	maxMem := d["max_memory_gib"]
+	if maxMem == "" {
+		maxMem = d["memory_gib"]
+	}
+
 	config := &Config{
 		ClusterName:   d["cluster_name"],
 		MinWorkers:    int32(clampInt(atoiDefault(d["min_workers"], 1), 0, 100)),
 		MaxWorkers:    int32(clampInt(atoiDefault(d["max_workers"], 10), 1, 100)),
 		MinCPU:        clampInt(atoiDefault(d["min_cpu"], 2), 1, 128),
-		MaxCPU:        clampInt(atoiDefault(d["max_cpu"], 8), 1, 128),
+		MaxCPU:        clampInt(atoiDefault(maxCPU, 8), 1, 128),
 		MinMemoryGiB:  clampInt(atoiDefault(d["min_memory_gib"], 4), 1, 1024),
-		MaxMemoryGiB:  clampInt(atoiDefault(d["max_memory_gib"], 16), 1, 1024),
+		MaxMemoryGiB:  clampInt(atoiDefault(maxMem, 16), 1, 1024),
 		DiskGiB:       int32(clampInt(atoiDefault(d["disk_gib"], 50), 10, 4096)),
 		StoragePool:   d["storage_pool"],
 		NetworkBridge: d["network_bridge"],
 		MACAddress:    d["mac_address"],
 		Serial:        d["serial"],
-		Tags:          d["tags"],
-	}
-
-	if pciJSON := d["pci_devices"]; pciJSON != "" {
-		if err := json.Unmarshal([]byte(pciJSON), &config.PCIDevices); err != nil {
-			return nil, fmt.Errorf("failed to parse pci_devices: %w", err)
-		}
 	}
 
 	return config, nil
