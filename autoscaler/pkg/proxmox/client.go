@@ -94,6 +94,9 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 	if c.authType == AuthToken {
 		req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
 	} else {
+		if c.ticket == "" {
+			return nil, fmt.Errorf("password auth requires login, not yet implemented")
+		}
 		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
 		req.Header.Set("CSRFPreventionToken", c.csrfToken)
 	}
