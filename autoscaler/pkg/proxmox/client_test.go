@@ -186,7 +186,12 @@ func TestListNodes_Empty(t *testing.T) {
 
 func TestGetNode_Configured(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("server should not be called when node is configured")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{
+				{Node: "pve1", Status: "online"},
+				{Node: "pve2", Status: "online"},
+			},
+		})
 	}))
 	defer srv.Close()
 
@@ -196,6 +201,25 @@ func TestGetNode_Configured(t *testing.T) {
 	node, err := c.GetNode(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, "pve1", node)
+}
+
+func TestGetNode_ConfiguredNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []Node{
+				{Node: "node-a", Status: "online"},
+				{Node: "node-b", Status: "online"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	node, err := c.GetNode(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "node-a", node) // falls back to first available
 }
 
 func TestGetNode_AutoDiscover(t *testing.T) {
@@ -231,6 +255,32 @@ func TestGetNode_NoNodes(t *testing.T) {
 	_, err = c.GetNode(context.Background())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no active nodes")
+}
+
+func TestResolveNode(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []Node{
+					{Node: "pve1", Status: "online"},
+				},
+			})
+			return
+		}
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	require.NoError(t, err)
+
+	err = c.ResolveNode(context.Background())
+	assert.NoError(t, err)
+
+	_ = c.startVM(context.Background(), 100)
+	assert.Equal(t, "/api2/json/nodes/pve1/qemu/100/status/start", gotPath)
 }
 
 func TestPasswordAuth_CachesTicket(t *testing.T) {

@@ -75,6 +75,9 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
+	if err := r.Proxmox.ResolveNode(ctx); err != nil {
+		return fmt.Errorf("resolve node: %w", err)
+	}
 	klog.V(2).Info("Config loaded", "cluster", cfg.ClusterName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 
 	evicted, err := r.findEvictableNodes(ctx, cfg.ClusterName)

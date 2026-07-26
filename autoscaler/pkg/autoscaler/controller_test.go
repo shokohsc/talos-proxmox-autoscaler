@@ -667,6 +667,12 @@ func TestReconcile_ScaleUp(t *testing.T) {
 
 	var createdVMs int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
 		if r.URL.Path == "/api2/json/access/ticket" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},
@@ -791,7 +797,13 @@ func TestReconcile_NoAction(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("no proxmox calls expected")
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
+		t.Fatal("no proxmox calls expected beyond node resolution")
 	}))
 	defer srv.Close()
 
@@ -818,6 +830,12 @@ func newTestProxmoxClient(baseURL string) (*proxmox.Client, error) {
 func newMockProxmoxServer(t *testing.T, deletedVMID *int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
 		if r.URL.Path == "/api2/json/access/ticket" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},
@@ -844,6 +862,12 @@ func newMockProxmoxServer(t *testing.T, deletedVMID *int) *httptest.Server {
 func newMockProxmoxServerBatch(t *testing.T, deletedVMIDs *[]int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
 		if r.URL.Path == "/api2/json/access/ticket" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},

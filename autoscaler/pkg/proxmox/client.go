@@ -442,10 +442,6 @@ func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
 }
 
 func (c *Client) GetNode(ctx context.Context) (string, error) {
-	if c.node != "" {
-		return c.node, nil
-	}
-
 	nodes, err := c.ListNodes(ctx)
 	if err != nil {
 		return "", err
@@ -453,5 +449,26 @@ func (c *Client) GetNode(ctx context.Context) (string, error) {
 	if len(nodes) == 0 {
 		return "", fmt.Errorf("no active nodes found")
 	}
+
+	if c.node != "" {
+		for _, n := range nodes {
+			if n == c.node {
+				return c.node, nil
+			}
+		}
+		klog.Warningf("Configured node %q not found in cluster, using first available: %s", c.node, nodes[0])
+	}
+
 	return nodes[0], nil
+}
+
+// ResolveNode sets the client's node to a valid cluster node.
+// Must be called before API operations that target a specific node.
+func (c *Client) ResolveNode(ctx context.Context) error {
+	node, err := c.GetNode(ctx)
+	if err != nil {
+		return err
+	}
+	c.node = node
+	return nil
 }
