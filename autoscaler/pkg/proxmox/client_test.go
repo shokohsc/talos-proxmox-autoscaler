@@ -2,6 +2,9 @@ package proxmox
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,20 +52,129 @@ func TestAuthDetection_NoCredentials(t *testing.T) {
 	assert.Contains(t, err.Error(), "no valid auth credentials")
 }
 
-func TestPasswordAuth_EmptyTicketReturnsError(t *testing.T) {
-	client, err := NewClient(
-		"https://pve.example.com:8006",
-		"root@pam",
-		"password123",
-		"",
-		"",
-		"pve",
-		true,
-	)
-	assert.NoError(t, err)
-	assert.Equal(t, "", client.ticket)
+func TestLogin_Success(t *testing.T) {
+	var gotUser, gotPass string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/access/ticket" {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			gotUser = r.FormValue("username")
+			gotPass = r.FormValue("password")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{
+					"ticket":              "PVEticket123",
+					"CSRFPreventionToken": "csrf456",
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
 
-	_, err = client.do(context.Background(), "GET", "/api2/json/version", nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "password auth requires login")
+	c, err := NewClient(srv.URL, "root@pam", "secret", "", "", "pve", true)
+	assert.NoError(t, err)
+	assert.NoError(t, c.login())
+
+	assert.Equal(t, "root@pam", gotUser)
+	assert.Equal(t, "secret", gotPass)
+	assert.Equal(t, "PVEticket123", c.ticket)
+	assert.Equal(t, "csrf456", c.csrfToken)
+}
+
+func TestLogin_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"errors":{"username":"invalid"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "root@pam", "wrong", "", "", "pve", true)
+	assert.NoError(t, err)
+	assert.Error(t, c.login())
+}
+
+func TestLogin_TokenAuthSkipsLogin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("server should not be called for token auth")
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+	assert.NoError(t, c.login())
+	assert.Equal(t, "", c.ticket)
+}
+
+func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
+	var ticketRequested bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/access/ticket" {
+			ticketRequested = true
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{
+					"ticket":              "PVEticket",
+					"CSRFPreventionToken": "csrf",
+				},
+			})
+			return
+		}
+		// For the actual API call, verify auth headers
+		cookie := r.Header.Get("Cookie")
+		csrf := r.Header.Get("CSRFPreventionToken")
+		if cookie != "PVEAuthCookie=PVEticket" || csrf != "csrf" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"data":null}`))
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": json.RawMessage(`{"version":"8.1.4"}`),
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "root@pam", "pass", "", "", "pve", true)
+	assert.NoError(t, err)
+	assert.False(t, ticketRequested)
+	assert.Equal(t, "", c.ticket)
+
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.NoError(t, err)
+	assert.True(t, ticketRequested)
+	assert.Equal(t, "PVEticket", c.ticket)
+}
+
+func TestPasswordAuth_CachesTicket(t *testing.T) {
+	loginCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/access/ticket" {
+			loginCount++
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{
+					"ticket":              "PVEticket",
+					"CSRFPreventionToken": "csrf",
+				},
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": json.RawMessage(`"ok"`),
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "root@pam", "pass", "", "", "pve", true)
+	assert.NoError(t, err)
+
+	// First call triggers login
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, loginCount)
+
+	// Second call reuses ticket
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, loginCount)
 }

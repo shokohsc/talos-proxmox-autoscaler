@@ -76,6 +76,43 @@ func NewClient(baseURL, username, password, tokenID, tokenSecret, node string, i
 	return c, nil
 }
 
+func (c *Client) login() error {
+	if c.authType == AuthToken {
+		return nil
+	}
+
+	loginURL := c.baseURL + "/api2/json/access/ticket"
+	data := "username=" + url.QueryEscape(c.tokenID) + "&password=" + url.QueryEscape(c.tokenSecret)
+
+	resp, err := c.httpClient.Post(loginURL, "application/x-www-form-urlencoded", strings.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("login request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("login failed: %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data struct {
+			Ticket              string `json:"ticket"`
+			CSRFPreventionToken string `json:"CSRFPreventionToken"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decode login response: %w", err)
+	}
+	if result.Data.Ticket == "" {
+		return fmt.Errorf("login returned empty ticket")
+	}
+
+	c.ticket = result.Data.Ticket
+	c.csrfToken = result.Data.CSRFPreventionToken
+	return nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body interface{}) (json.RawMessage, error) {
 	var reqBody io.Reader
 	if body != nil {
@@ -95,7 +132,9 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 		req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
 	} else {
 		if c.ticket == "" {
-			return nil, fmt.Errorf("password auth requires login, not yet implemented")
+			if err := c.login(); err != nil {
+				return nil, err
+			}
 		}
 		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
 		req.Header.Set("CSRFPreventionToken", c.csrfToken)
