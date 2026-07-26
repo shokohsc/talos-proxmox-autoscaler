@@ -148,7 +148,7 @@ func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
 
 func TestListNodes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []Node{
 				{Node: "pve2", Status: "online"},
 				{Node: "pve1", Status: "online"},
@@ -168,7 +168,7 @@ func TestListNodes(t *testing.T) {
 
 func TestListNodes_Empty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []Node{},
 		})
 	}))
@@ -198,7 +198,7 @@ func TestGetNode_Configured(t *testing.T) {
 
 func TestGetNode_AutoDiscover(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []Node{
 				{Node: "pve2", Status: "online"},
 				{Node: "pve1", Status: "online"},
@@ -217,7 +217,7 @@ func TestGetNode_AutoDiscover(t *testing.T) {
 
 func TestGetNode_NoNodes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": []Node{},
 		})
 	}))
@@ -236,7 +236,7 @@ func TestPasswordAuth_CachesTicket(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/access/ticket" {
 			loginCount++
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": map[string]string{
 					"ticket":              "PVEticket",
 					"CSRFPreventionToken": "csrf",
@@ -244,7 +244,7 @@ func TestPasswordAuth_CachesTicket(t *testing.T) {
 			})
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"data": json.RawMessage(`"ok"`),
 		})
 	}))
@@ -268,7 +268,7 @@ func TestCreateVMFromScratch_Tags(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
 
@@ -291,7 +291,7 @@ func TestCreateVMFromScratch_NoTagsWhenEmpty(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
 
@@ -313,7 +313,7 @@ func TestCreateVMFromScratch_PCI(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
 
@@ -341,7 +341,7 @@ func TestCreateVMFromScratch_MultiplePCI(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotQuery = r.URL.RawQuery
-		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
 
