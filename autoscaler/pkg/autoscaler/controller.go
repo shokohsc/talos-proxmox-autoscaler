@@ -2,6 +2,7 @@ package autoscaler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,17 +24,32 @@ const (
 	deschedulerLabel    = "descheduler.kubernetes.io/node-probable-eviction"
 )
 
+type VMSize struct {
+	CPU       int
+	MemoryGiB int
+}
+
+type PCIDevice struct {
+	ID   string `json:"id"`
+	PCIe bool   `json:"pcie"`
+	GPU  bool   `json:"gpu"`
+}
+
 type Config struct {
 	ClusterName   string
 	MinWorkers    int32
 	MaxWorkers    int32
-	VCPU          int32
-	MemoryGiB     int32
+	MinCPU        int
+	MaxCPU        int
+	MinMemoryGiB  int
+	MaxMemoryGiB  int
 	DiskGiB       int32
 	StoragePool   string
 	NetworkBridge string
 	MACAddress    string
 	Serial        string
+	Tags          string
+	PCIDevices    []PCIDevice
 }
 
 type Reconciler struct {
@@ -99,23 +115,30 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		return nil, err
 	}
 	d := cm.Data
-	minW, _ := strconv.ParseInt(d["min_workers"], 10, 32)
-	maxW, _ := strconv.ParseInt(d["max_workers"], 10, 32)
-	vcpu, _ := strconv.ParseInt(d["vcpu"], 10, 32)
-	mem, _ := strconv.ParseInt(d["memory_gib"], 10, 32)
-	disk, _ := strconv.ParseInt(d["disk_gib"], 10, 32)
-	return &Config{
+
+	config := &Config{
 		ClusterName:   d["cluster_name"],
-		MinWorkers:    int32(clampInt(int(minW), 0, 100)),
-		MaxWorkers:    int32(clampInt(int(maxW), 1, 100)),
-		VCPU:          int32(clampInt(int(vcpu), 1, 128)),
-		MemoryGiB:     int32(clampInt(int(mem), 1, 1024)),
-		DiskGiB:       int32(clampInt(int(disk), 10, 4096)),
+		MinWorkers:    int32(clampInt(atoiDefault(d["min_workers"], 1), 0, 100)),
+		MaxWorkers:    int32(clampInt(atoiDefault(d["max_workers"], 10), 1, 100)),
+		MinCPU:        clampInt(atoiDefault(d["min_cpu"], 2), 1, 128),
+		MaxCPU:        clampInt(atoiDefault(d["max_cpu"], 8), 1, 128),
+		MinMemoryGiB:  clampInt(atoiDefault(d["min_memory_gib"], 4), 1, 1024),
+		MaxMemoryGiB:  clampInt(atoiDefault(d["max_memory_gib"], 16), 1, 1024),
+		DiskGiB:       int32(clampInt(atoiDefault(d["disk_gib"], 50), 10, 4096)),
 		StoragePool:   d["storage_pool"],
 		NetworkBridge: d["network_bridge"],
 		MACAddress:    d["mac_address"],
 		Serial:        d["serial"],
-	}, nil
+		Tags:          d["tags"],
+	}
+
+	if pciJSON := d["pci_devices"]; pciJSON != "" {
+		if err := json.Unmarshal([]byte(pciJSON), &config.PCIDevices); err != nil {
+			return nil, fmt.Errorf("failed to parse pci_devices: %w", err)
+		}
+	}
+
+	return config, nil
 }
 
 func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, resource.Quantity, int, error) {
@@ -152,8 +175,8 @@ func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, p
 	if pendingPods == 0 {
 		return cfg.MinWorkers
 	}
-	cpuCap := resource.MustParse(fmt.Sprintf("%d", cfg.VCPU))
-	memCap := resource.MustParse(fmt.Sprintf("%dGi", cfg.MemoryGiB))
+	cpuCap := resource.MustParse(fmt.Sprintf("%d", cfg.MaxCPU))
+	memCap := resource.MustParse(fmt.Sprintf("%dGi", cfg.MaxMemoryGiB))
 
 	var byCPU, byMem int32
 	if pendingCPU.Cmp(resource.Quantity{}) > 0 {
@@ -211,8 +234,8 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, cfg *C
 		ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 			Name:          vmName,
 			VMID:          vmid,
-			VCPU:          cfg.VCPU,
-			MemoryMiB:     cfg.MemoryGiB * 1024,
+			VCPU:          int32(cfg.MaxCPU),
+			MemoryMiB:     int32(cfg.MaxMemoryGiB) * 1024,
 			DiskGiB:       cfg.DiskGiB,
 			StoragePool:   cfg.StoragePool,
 			NetworkBridge: cfg.NetworkBridge,
@@ -318,6 +341,17 @@ func clampInt(v, min, max int) int {
 	}
 	if v > max {
 		return max
+	}
+	return v
+}
+
+func atoiDefault(s string, defaultVal int) int {
+	if s == "" {
+		return defaultVal
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultVal
 	}
 	return v
 }
