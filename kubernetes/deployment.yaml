@@ -36,11 +36,6 @@ spec:
                 configMapKeyRef:
                   name: autoscaler-config
                   key: proxmox_api_url
-            - name: PROXMOX_NODE
-              valueFrom:
-                configMapKeyRef:
-                  name: autoscaler-config
-                  key: proxmox_node
             - name: PROXMOX_INSECURE
               valueFrom:
                 configMapKeyRef:
