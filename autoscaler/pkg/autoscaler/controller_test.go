@@ -43,9 +43,17 @@ func TestCalculateNeeded(t *testing.T) {
 	r := &Reconciler{}
 	cfg := &Config{MinWorkers: 1, MaxCPU: 4, MaxMemoryGiB: 8}
 
-	t.Run("no pending pods returns min workers", func(t *testing.T) {
-		got, _ := r.calculateNeeded(resource.Quantity{}, resource.Quantity{}, 0, cfg)
+	t.Run("no pending pods returns min workers with min size", func(t *testing.T) {
+		got, size := r.calculateNeeded(resource.Quantity{}, resource.Quantity{}, 0, cfg)
 		assert.Equal(t, int32(1), got)
+		assert.Equal(t, VMSize{CPU: 0, MemoryGiB: 0}, size)
+	})
+
+	t.Run("no pending pods uses min config values", func(t *testing.T) {
+		cfgMin := &Config{MinWorkers: 1, MinCPU: 2, MaxCPU: 4, MinMemoryGiB: 4, MaxMemoryGiB: 8}
+		got, size := r.calculateNeeded(resource.Quantity{}, resource.Quantity{}, 0, cfgMin)
+		assert.Equal(t, int32(1), got)
+		assert.Equal(t, VMSize{CPU: 2, MemoryGiB: 4}, size)
 	})
 
 	t.Run("cpu-driven scaling", func(t *testing.T) {

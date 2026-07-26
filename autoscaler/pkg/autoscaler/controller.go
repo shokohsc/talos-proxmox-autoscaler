@@ -189,7 +189,7 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 
 func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, pendingPods int, cfg *Config) (int32, VMSize) {
 	if pendingPods == 0 {
-		return cfg.MinWorkers, VMSize{}
+		return cfg.MinWorkers, VMSize{CPU: cfg.MinCPU, MemoryGiB: cfg.MinMemoryGiB}
 	}
 	cpuCap := resource.MustParse(fmt.Sprintf("%d", cfg.MaxCPU))
 	memCap := resource.MustParse(fmt.Sprintf("%dGi", cfg.MaxMemoryGiB))
