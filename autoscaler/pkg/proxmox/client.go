@@ -35,6 +35,12 @@ type Client struct {
 	csrfToken   string
 }
 
+type PCIDevice struct {
+	ID   string `json:"id"`
+	PCIe bool   `json:"pcie"`
+	GPU  bool   `json:"gpu"`
+}
+
 type VMConfig struct {
 	Name          string
 	VMID          int
@@ -46,6 +52,8 @@ type VMConfig struct {
 	MACAddress    string
 	Serial        string
 	TemplateID    int
+	Tags          string
+	PCIDevices   []PCIDevice
 }
 
 type Node struct {
@@ -217,6 +225,20 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	}
 	if config.Serial != "" {
 		params.Set("serial0", fmt.Sprintf("socket=%s", config.Serial))
+	}
+	if config.Tags != "" {
+		params.Set("tags", config.Tags)
+	}
+	for i, pci := range config.PCIDevices {
+		key := fmt.Sprintf("hostpci%d", i)
+		value := fmt.Sprintf("host=%s", pci.ID)
+		if pci.PCIe {
+			value += ",pcie=1"
+		}
+		if pci.GPU {
+			value += ",gpu=1"
+		}
+		params.Set(key, value)
 	}
 
 	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu?%s", c.node, params.Encode()), nil)

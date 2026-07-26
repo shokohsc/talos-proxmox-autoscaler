@@ -263,3 +263,103 @@ func TestPasswordAuth_CachesTicket(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, loginCount)
 }
+
+func TestCreateVMFromScratch_Tags(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:        "test-vm",
+		VMID:        100,
+		VCPU:        2,
+		MemoryMiB:   2048,
+		StoragePool: "local-lvm",
+		Tags:        "autoscaler,worker,v1",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "tags=autoscaler%2Cworker%2Cv1")
+}
+
+func TestCreateVMFromScratch_NoTagsWhenEmpty(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:        "test-vm",
+		VMID:        100,
+		VCPU:        2,
+		MemoryMiB:   2048,
+		StoragePool: "local-lvm",
+	})
+	assert.NoError(t, err)
+	assert.NotContains(t, gotQuery, "tags")
+}
+
+func TestCreateVMFromScratch_PCI(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:        "test-vm",
+		VMID:        100,
+		VCPU:        2,
+		MemoryMiB:   2048,
+		StoragePool: "local-lvm",
+		PCIDevices: []PCIDevice{
+			{ID: "0000:01:00.0", PCIe: true, GPU: true},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "hostpci0")
+	assert.Contains(t, gotQuery, "host%3D0000%3A01%3A00.0")
+	assert.Contains(t, gotQuery, "pcie%3D1")
+	assert.Contains(t, gotQuery, "gpu%3D1")
+}
+
+func TestCreateVMFromScratch_MultiplePCI(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:        "test-vm",
+		VMID:        100,
+		VCPU:        2,
+		MemoryMiB:   2048,
+		StoragePool: "local-lvm",
+		PCIDevices: []PCIDevice{
+			{ID: "0000:01:00.0", PCIe: true, GPU: false},
+			{ID: "0000:02:00.0", PCIe: false, GPU: true},
+		},
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "hostpci0")
+	assert.Contains(t, gotQuery, "hostpci1")
+}
