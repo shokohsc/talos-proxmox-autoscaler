@@ -2,6 +2,7 @@ package autoscaler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -41,6 +42,8 @@ type Config struct {
 	NetworkBridge string
 	MACAddress    string
 	Serial        string
+	Tags          string
+	PCIDevices   []proxmox.PCIDevice
 }
 
 type Reconciler struct {
@@ -130,6 +133,11 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		NetworkBridge: d["network_bridge"],
 		MACAddress:    d["mac_address"],
 		Serial:        d["serial"],
+		Tags:          d["tags"],
+	}
+
+	if d["pci_devices"] != "" {
+		_ = json.Unmarshal([]byte(d["pci_devices"]), &config.PCIDevices)
 	}
 
 	return config, nil
@@ -240,6 +248,8 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			NetworkBridge: cfg.NetworkBridge,
 			MACAddress:    cfg.MACAddress,
 			Serial:        cfg.Serial,
+			Tags:          cfg.Tags,
+			PCIDevices:    cfg.PCIDevices,
 		})
 		if err != nil {
 			klog.Error(err, "Failed to create VM", "vmid", vmid)

@@ -143,6 +143,53 @@ func TestReadConfigBackwardCompat(t *testing.T) {
 	assert.Equal(t, 8, cfg.MaxMemoryGiB)
 }
 
+func TestReadConfigTags(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+			"tags":         "autoscaler,worker,v1",
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "autoscaler,worker,v1", cfg.Tags)
+}
+
+func TestReadConfigPCIDevices(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+			"pci_devices":  `[{"id":"0000:01:00.0","pcie":true,"gpu":true}]`,
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	require.Len(t, cfg.PCIDevices, 1)
+	assert.Equal(t, "0000:01:00.0", cfg.PCIDevices[0].ID)
+	assert.True(t, cfg.PCIDevices[0].PCIe)
+	assert.True(t, cfg.PCIDevices[0].GPU)
+}
+
+func TestReadConfigPCIDevicesEmpty(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, cfg.PCIDevices)
+}
+
 func TestReadConfigNewKeysOverrideLegacy(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
