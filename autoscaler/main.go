@@ -22,6 +22,8 @@ func main() {
 
 	proxmoxURL := getEnv("PROXMOX_API_URL", "https://pve.example.com:8006")
 	proxmoxNode := getEnv("PROXMOX_NODE", "pve")
+	username := readFile(getEnv("PROXMOX_USERNAME_FILE", ""))
+	password := readFile(getEnv("PROXMOX_PASSWORD_FILE", ""))
 	tokenID := readFile(getEnv("PROXMOX_API_TOKEN_ID_FILE", "/etc/secrets/proxmox_api_token_id"))
 	tokenSecret := readFile(getEnv("PROXMOX_API_TOKEN_SECRET_FILE", "/etc/secrets/proxmox_api_token_secret"))
 	insecure := getEnv("PROXMOX_INSECURE", "false") == "true"
@@ -30,7 +32,10 @@ func main() {
 		baseVMID = 2000
 	}
 
-	proxmoxClient := proxmox.NewClient(proxmoxURL, proxmoxNode, tokenID, tokenSecret, insecure)
+	proxmoxClient, err := proxmox.NewClient(proxmoxURL, username, password, tokenID, tokenSecret, proxmoxNode, insecure)
+	if err != nil {
+		klog.Fatalf("Unable to create proxmox client: %v", err)
+	}
 
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {

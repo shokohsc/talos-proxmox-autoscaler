@@ -8,6 +8,7 @@ require (
 	k8s.io/client-go v0.30.1
 	k8s.io/klog/v2 v2.130.1
 	sigs.k8s.io/controller-runtime v0.18.4
+	github.com/stretchr/testify v1.8.4
 )
 
 require (

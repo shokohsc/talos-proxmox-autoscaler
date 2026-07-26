@@ -10,9 +10,17 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"k8s.io/klog/v2"
+)
+
+type AuthType int
+
+const (
+	AuthPassword AuthType = iota
+	AuthToken
 )
 
 type Client struct {
@@ -21,6 +29,9 @@ type Client struct {
 	tokenID     string
 	tokenSecret string
 	node        string
+	authType    AuthType
+	ticket      string
+	csrfToken   string
 }
 
 type VMConfig struct {
@@ -40,17 +51,29 @@ type apiResponse struct {
 	Data json.RawMessage `json:"data"`
 }
 
-func NewClient(baseURL, node, tokenID, tokenSecret string, insecure bool) *Client {
+func NewClient(baseURL, username, password, tokenID, tokenSecret, node string, insecure bool) (*Client, error) {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 	}
-	return &Client{
-		httpClient:  &http.Client{Transport: transport, Timeout: 30 * time.Second},
-		baseURL:     baseURL,
-		node:        node,
-		tokenID:     tokenID,
-		tokenSecret: tokenSecret,
+	c := &Client{
+		httpClient: &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		node:       node,
 	}
+
+	if password != "" && username != "" {
+		c.authType = AuthPassword
+		c.tokenID = username
+		c.tokenSecret = password
+	} else if tokenID != "" && tokenSecret != "" {
+		c.authType = AuthToken
+		c.tokenID = tokenID
+		c.tokenSecret = tokenSecret
+	} else {
+		return nil, fmt.Errorf("no valid auth credentials provided")
+	}
+
+	return c, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body interface{}) (json.RawMessage, error) {
@@ -68,7 +91,12 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
+	if c.authType == AuthToken {
+		req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
+	} else {
+		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
+		req.Header.Set("CSRFPreventionToken", c.csrfToken)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
