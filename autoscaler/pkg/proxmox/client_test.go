@@ -3,11 +3,14 @@ package proxmox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthDetection_PasswordAuth(t *testing.T) {
@@ -121,7 +124,6 @@ func TestDo_TriggersLoginOnPasswordAuth(t *testing.T) {
 			})
 			return
 		}
-		// For the actual API call, verify auth headers
 		cookie := r.Header.Get("Cookie")
 		csrf := r.Header.Get("CSRFPreventionToken")
 		if cookie != "PVEAuthCookie=PVEticket" || csrf != "csrf" {
@@ -253,12 +255,10 @@ func TestPasswordAuth_CachesTicket(t *testing.T) {
 	c, err := NewClient(srv.URL, "root@pam", "pass", "", "", "pve", true)
 	assert.NoError(t, err)
 
-	// First call triggers login
 	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, loginCount)
 
-	// Second call reuses ticket
 	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, loginCount)
@@ -412,4 +412,342 @@ func TestCreateVMFromScratch_NoVLANWhenZero(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, gotQuery, "net0")
 	assert.NotContains(t, gotQuery, "tag")
+}
+
+func TestStartVM(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.startVM(context.Background(), 200)
+	assert.NoError(t, err)
+	assert.Equal(t, "POST", gotMethod)
+	assert.Equal(t, "/api2/json/nodes/pve/qemu/200/status/start", gotPath)
+}
+
+func TestStopVM(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.StopVM(context.Background(), 200)
+	assert.NoError(t, err)
+	assert.Equal(t, "POST", gotMethod)
+	assert.Equal(t, "/api2/json/nodes/pve/qemu/200/status/stop", gotPath)
+}
+
+func TestDeleteVM(t *testing.T) {
+	var methods []string
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		paths = append(paths, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	start := time.Now()
+	err = c.DeleteVM(context.Background(), 300)
+	elapsed := time.Since(start)
+	assert.NoError(t, err)
+	// DeleteVM calls StopVM (POST), then sleeps 3s, then DELETE
+	assert.Len(t, methods, 2)
+	assert.Equal(t, "POST", methods[0]) // stop
+	assert.Equal(t, "DELETE", methods[1]) // delete
+	assert.Contains(t, paths[0], "/status/stop")
+	assert.Contains(t, paths[1], "/qemu/300")
+	assert.GreaterOrEqual(t, elapsed.Seconds(), 2.5) // 3s sleep
+}
+
+func TestGetVMStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Contains(t, r.URL.Path, "/status/current")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]string{"status": "running"},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	status, err := c.GetVMStatus(context.Background(), 100)
+	assert.NoError(t, err)
+	assert.Equal(t, "running", status)
+}
+
+func TestFindVMByName_Found(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{"vmid": 100, "name": "other-vm", "status": "running"},
+				{"vmid": 200, "name": "target-vm", "status": "stopped"},
+				{"vmid": 300, "name": "another-vm", "status": "running"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	vmid, err := c.FindVMByName(context.Background(), "target-vm")
+	assert.NoError(t, err)
+	assert.Equal(t, 200, vmid)
+}
+
+func TestFindVMByName_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{"vmid": 100, "name": "other-vm", "status": "running"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	_, err = c.FindVMByName(context.Background(), "nonexistent")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestWaitForIP_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{
+					"name": "eth0",
+					"ip-addresses": []map[string]interface{}{
+						{"ip-address": "10.0.0.5", "ip-address-type": "ipv4"},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ip, err := c.waitForIP(context.Background(), 100, 10*time.Second)
+	assert.NoError(t, err)
+	assert.Equal(t, "10.0.0.5", ip)
+}
+
+func TestWaitForIP_SkipsLoopback(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// First call: only loopback
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{
+						"name": "lo",
+						"ip-addresses": []map[string]interface{}{
+							{"ip-address": "127.0.0.1", "ip-address-type": "ipv4"},
+						},
+					},
+				},
+			})
+			return
+		}
+		// Second call: real interface
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{
+					"name": "eth0",
+					"ip-addresses": []map[string]interface{}{
+						{"ip-address": "10.0.0.5", "ip-address-type": "ipv4"},
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ip, err := c.waitForIP(context.Background(), 100, 30*time.Second)
+	assert.NoError(t, err)
+	assert.Equal(t, "10.0.0.5", ip)
+	assert.GreaterOrEqual(t, callCount, 2)
+}
+
+func TestWaitForIP_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	_, err = c.waitForIP(ctx, 100, 5*time.Minute)
+	assert.Error(t, err)
+}
+
+func TestWaitForTask_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]string{"status": "stopped"},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.waitForTask(context.Background(), "UPID:sometask")
+	assert.NoError(t, err)
+}
+
+func TestWaitForTask_ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]string{"status": "running"},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	err = c.waitForTask(ctx, "UPID:sometask")
+	assert.Error(t, err)
+}
+
+func TestCloneVM(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api2/json/nodes/pve/qemu/900/clone":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": "UPID:clone-task",
+			})
+		case r.Method == "GET" && r.URL.Path == "/api2/json/nodes/pve/tasks/UPID:clone-task":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{"status": "stopped"},
+			})
+		case r.Method == "PUT":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.cloneVM(context.Background(), VMConfig{
+		Name:          "cloned-vm",
+		VMID:          100,
+		TemplateID:    900,
+		VCPU:          4,
+		MemoryMiB:     4096,
+		DiskGiB:       50,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		MACAddress:    "AA:BB:CC:DD:EE:FF",
+	})
+	assert.NoError(t, err)
+	require.Len(t, calls, 3)
+	assert.Contains(t, calls[0], "/clone")
+	assert.Contains(t, calls[1], "/tasks/")
+	assert.Contains(t, calls[2], "PUT")
+}
+
+func TestCreateVM_Scratch(t *testing.T) {
+	var gotPaths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err = c.CreateVM(ctx, VMConfig{
+		Name:          "new-vm",
+		VMID:          500,
+		VCPU:          4,
+		MemoryMiB:     8192,
+		DiskGiB:       100,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		MACAddress:    "AA:BB:CC:DD:EE:FF",
+	})
+	// createVMFromScratch + startVM + at least one agent poll before context cancel
+	assert.Error(t, err) // timeout waiting for IP
+	assert.GreaterOrEqual(t, len(gotPaths), 2)
+	assert.Contains(t, gotPaths[0], "/qemu") // create from scratch
+	assert.Contains(t, gotPaths[1], "/status/start")
+}
+
+func TestDo_TokenAuthHeaders(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": json.RawMessage(`"ok"`),
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "my-secret", "pve", true)
+	require.NoError(t, err)
+
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "PVEAPIToken=user@realm!tok=my-secret", gotAuth)
+}
+
+func TestDo_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
 }

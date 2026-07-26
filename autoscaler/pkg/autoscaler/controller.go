@@ -284,8 +284,14 @@ func (r *Reconciler) scaleDown(ctx context.Context, current, desired int32, clus
 func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName string) {
 	r.drainNode(ctx, nodeName)
 
+	// ponytail: use strings.Cut to parse "-worker-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
+	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-worker-")
+	if !ok {
+		klog.Error(fmt.Errorf("unexpected node name format: %s", nodeName), "Failed to parse VM index")
+		return
+	}
 	var vmIndex int
-	if _, err := fmt.Sscanf(nodeName, "%s-worker-%d", &clusterName, &vmIndex); err != nil {
+	if _, err := fmt.Sscanf(suffix, "%d", &vmIndex); err != nil {
 		klog.Error(err, "Failed to parse VM index", "node", nodeName)
 		return
 	}
