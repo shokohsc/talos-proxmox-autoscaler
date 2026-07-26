@@ -506,12 +506,11 @@ func TestCreateVMFromScratch_Serial(t *testing.T) {
 		MemoryMiB:     2048,
 		StoragePool:   "local-lvm",
 		NetworkBridge: "vmbr0",
-		Serial:        "socket",
+		Serial:        "ABC123",
 	})
 	assert.NoError(t, err)
-	assert.Contains(t, gotQuery, "serial0")
-	assert.Contains(t, gotQuery, "socket")
-	assert.NotContains(t, gotQuery, "socket%3Dsocket")
+	assert.Contains(t, gotQuery, "smbios1")
+	assert.Contains(t, gotQuery, "serial%3DABC123")
 }
 
 func TestStartVM(t *testing.T) {

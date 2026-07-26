@@ -237,7 +237,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
 	if config.Serial != "" {
-		params.Set("serial0", config.Serial)
+		params.Set("smbios1", fmt.Sprintf("serial=%s", config.Serial))
 	}
 	if config.Tags != "" {
 		params.Set("tags", config.Tags)
@@ -294,7 +294,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("net0", net0)
 	}
 	if config.Serial != "" {
-		params.Set("serial0", config.Serial)
+		params.Set("smbios1", fmt.Sprintf("serial=%s", config.Serial))
 	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
