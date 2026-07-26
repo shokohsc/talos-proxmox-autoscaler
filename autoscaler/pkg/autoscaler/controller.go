@@ -137,7 +137,9 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 	}
 
 	if d["pci_devices"] != "" {
-		_ = json.Unmarshal([]byte(d["pci_devices"]), &config.PCIDevices)
+		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.PCIDevices); err != nil {
+			return nil, fmt.Errorf("parse pci_devices: %w", err)
+		}
 	}
 
 	return config, nil

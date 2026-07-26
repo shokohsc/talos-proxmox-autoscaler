@@ -176,6 +176,21 @@ func TestReadConfigPCIDevices(t *testing.T) {
 	assert.True(t, cfg.PCIDevices[0].GPU)
 }
 
+func TestReadConfigPCIDevicesMalformed(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name": "test",
+			"pci_devices":  `not valid json`,
+		},
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	_, err := r.readConfig(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pci_devices")
+}
+
 func TestReadConfigPCIDevicesEmpty(t *testing.T) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
