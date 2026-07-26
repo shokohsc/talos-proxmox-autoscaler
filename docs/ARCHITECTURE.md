@@ -198,6 +198,7 @@ type PCIDevice struct {
 type Reconciler struct {
     Proxmox    *proxmox.Client
     KubeClient kubernetes.Interface
+    Namespace  string
     BaseVMID   int
 }
 ```

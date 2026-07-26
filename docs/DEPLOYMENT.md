@@ -175,6 +175,8 @@ The autoscaler auto-detects which auth method to use based on which secret field
 
 The deployment mounts these as files at `/etc/secrets/`. See `kubernetes/deployment.yaml` for the volume mount configuration.
 
+The autoscaler reads its own namespace from the `NAMESPACE` env var, which is automatically set via the Kubernetes downward API (`metadata.namespace`). If you deploy in a custom namespace, just change the `namespace:` field in the manifests — no code configuration needed.
+
 ## Step 6: Create the ConfigMap
 
 All VM specs and scaling parameters live in a single ConfigMap. Apply it:
