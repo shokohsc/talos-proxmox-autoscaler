@@ -52,6 +52,10 @@ spec:
               value: "/etc/secrets/proxmox_api_token_id"
             - name: PROXMOX_API_TOKEN_SECRET_FILE
               value: "/etc/secrets/proxmox_api_token_secret"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
             - name: secrets
               mountPath: /etc/secrets

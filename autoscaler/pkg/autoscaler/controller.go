@@ -50,6 +50,7 @@ type Config struct {
 type Reconciler struct {
 	Proxmox    *proxmox.Client
 	KubeClient kubernetes.Interface
+	Namespace  string
 	BaseVMID   int
 }
 
@@ -105,7 +106,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 }
 
 func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
-	cm, err := r.KubeClient.CoreV1().ConfigMaps("autoscaler-system").Get(ctx, "autoscaler-config", metav1.GetOptions{})
+	cm, err := r.KubeClient.CoreV1().ConfigMaps(r.Namespace).Get(ctx, "autoscaler-config", metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}

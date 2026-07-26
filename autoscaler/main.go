@@ -46,9 +46,12 @@ func main() {
 		klog.Fatalf("Unable to create kubernetes client: %v", err)
 	}
 
+	namespace := getEnv("NAMESPACE", "autoscaler-system")
+
 	r := &autoscaler.Reconciler{
 		Proxmox:    proxmoxClient,
 		KubeClient: kubeClient,
+		Namespace:  namespace,
 		BaseVMID:   baseVMID,
 	}
 

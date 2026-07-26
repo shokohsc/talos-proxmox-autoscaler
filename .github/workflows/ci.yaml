@@ -46,7 +46,16 @@ jobs:
 
       - name: Run tests
         working-directory: autoscaler
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage report
+        working-directory: autoscaler
+        run: |
+          go tool cover -func=coverage.out | tail -1
+          echo "## Test Coverage" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          go tool cover -func=coverage.out | tail -1 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - uses: actions/upload-artifact@v4
         if: always()

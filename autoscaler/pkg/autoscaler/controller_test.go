@@ -114,7 +114,7 @@ func TestReadConfigNewKeys(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 
@@ -134,7 +134,7 @@ func TestReadConfigBackwardCompat(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 
@@ -152,7 +152,7 @@ func TestReadConfigTags(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "autoscaler,worker,v1", cfg.Tags)
@@ -167,7 +167,7 @@ func TestReadConfigPCIDevices(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	require.Len(t, cfg.PCIDevices, 1)
@@ -185,7 +185,7 @@ func TestReadConfigPCIDevicesMalformed(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	_, err := r.readConfig(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pci_devices")
@@ -199,7 +199,7 @@ func TestReadConfigPCIDevicesEmpty(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, cfg.PCIDevices)
@@ -214,7 +214,7 @@ func TestReadConfigVLANID(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 100, cfg.VLANID)
@@ -228,7 +228,7 @@ func TestReadConfigVLANIDDefault(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 0, cfg.VLANID)
@@ -246,7 +246,7 @@ func TestReadConfigNewKeysOverrideLegacy(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 
