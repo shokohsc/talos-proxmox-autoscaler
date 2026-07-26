@@ -159,133 +159,48 @@ kubectl create secret generic autoscaler-secrets \
 
 The deployment mounts these as files at `/etc/secrets/`. See `kubernetes/deployment.yaml` for the volume mount configuration.
 
-## Step 6: Create the Machine Class CRDs
+## Step 6: Create the ConfigMap
+
+All VM specs and scaling parameters live in a single ConfigMap. Apply it:
 
 ```bash
-kubectl apply -f kubernetes/crds/
+kubectl apply -f kubernetes/configmap.yaml
 ```
 
-Apply the machine class definitions:
+Or create it directly:
 
 ```bash
 cat <<EOF | kubectl apply -f -
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineClass
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: tiny
-spec:
-  vcpu: 2
-  memoryGiB: 4
-  diskGiB: 30
-  networkBridge: vmbr0
-  storagePool: local-lvm
-  proxmoxPool: k8s-workers
-  labels:
-    tier: lightweight
----
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineClass
-metadata:
-  name: standard
-spec:
-  vcpu: 4
-  memoryGiB: 8
-  diskGiB: 50
-  networkBridge: vmbr0
-  storagePool: local-lvm
-  proxmoxPool: k8s-workers
-  labels:
-    tier: general
----
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineClass
-metadata:
-  name: gpu
-spec:
-  vcpu: 8
-  memoryGiB: 32
-  diskGiB: 100
-  networkBridge: vmbr0
-  storagePool: local-lvm
-  proxmoxPool: k8s-workers
-  gpu:
-    vendor: nvidia
-    model: "RTX-4090"
-    pciAddress: "0000:01:00.0"
-  labels:
-    tier: gpu
----
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineClass
-metadata:
-  name: storage
-spec:
-  vcpu: 4
-  memoryGiB: 16
-  diskGiB: 200
-  networkBridge: vmbr0
-  storagePool: local-lvm
-  proxmoxPool: k8s-workers
-  labels:
-    tier: storage
+  name: autoscaler-config
+  namespace: autoscaler-system
+data:
+  # VM specs
+  vcpu: "4"
+  memory_gib: "8"
+  disk_gib: "50"
+  storage_pool: "local-lvm"
+  network_bridge: "vmbr0"
+
+  # Optional: explicit MAC for PXE config lookup
+  # mac_address: "52:54:00:AA:BB:CC"
+  # serial: "worker-standard-001"
+
+  # Scaling
+  cluster_name: "k8s"
+  min_workers: "1"
+  max_workers: "20"
 EOF
 ```
 
 Verify:
 ```bash
-kubectl get machineclasses
-# NAME       VCPU   MEMORY   DISK     MAC       SERIAL
-# tiny       2      4        30
-# standard   4      8        50
-# gpu        8      32       100
-# storage    4      16       200
+kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 ```
 
-## Step 7: Create MachineDeployments
-
-Create a deployment for each machine class you want to autoscale:
-
-```bash
-cat <<EOF | kubectl apply -f -
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineDeployment
-metadata:
-  name: standard-workers
-  namespace: default
-spec:
-  replicas: 1
-  machineClassName: standard
-  minReplicas: 1
-  maxReplicas: 20
-  template:
-    metadata:
-      labels:
-        role: worker
-        class: standard
-    spec:
-      bootTimeout: 300s
----
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineDeployment
-metadata:
-  name: gpu-workers
-  namespace: default
-spec:
-  replicas: 0
-  machineClassName: gpu
-  minReplicas: 0
-  maxReplicas: 5
-  template:
-    metadata:
-      labels:
-        role: worker
-        class: gpu
-    spec:
-      bootTimeout: 300s
-EOF
-```
-
-## Step 8: Install RBAC and Service Accounts
+## Step 7: Install RBAC and Service Accounts
 
 ```bash
 kubectl apply -f kubernetes/rbac/
@@ -293,22 +208,10 @@ kubectl apply -f kubernetes/rbac/
 
 This creates:
 - `ServiceAccount: talos-proxmox-autoscaler`
-- `ClusterRole: talos-proxmox-autoscaler` with permissions for nodes, pods, machines, events
+- `ClusterRole: talos-proxmox-autoscaler` with permissions for nodes, pods, configmaps, events
 - `ClusterRoleBinding: talos-proxmox-autoscaler`
 
-## Step 9: Deploy KEDA Scalers
-
-```bash
-# Install KEDA (if not already installed)
-kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.1/keda-operator.yaml
-kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.1/keda-operator-metrics.yaml
-kubectl apply -f https://github.com/kedacore/keda/releases/download/v2.13.1/keda-auth-webhook.yaml
-
-# Apply the autoscaler scalers
-kubectl apply -f kubernetes/keda/
-```
-
-## Step 9b: Deploy the Descheduler (Optional but Recommended)
+## Step 8: Deploy the Descheduler (Optional but Recommended)
 
 The autoscaler does **not** perform its own utilization-based scale-down. Instead, an external descheduler watches for underutilized nodes and labels them with `descheduler.kubernetes.io/node-probable-eviction`. The autoscaler then cordons, drains, and deletes those nodes.
 
@@ -325,7 +228,7 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/descheduler/m
 
 If the descheduler is not deployed, no automatic scale-down will occur — workers will only be added, never removed.
 
-## Step 10: Build and Deploy the Autoscaler
+## Step 9: Build and Deploy the Autoscaler
 
 ```bash
 # Build the container image
@@ -347,7 +250,7 @@ envsubst < kubernetes/deployment.yaml | kubectl apply -f -
 make deploy
 ```
 
-## Step 11: Verify Deployment
+## Step 10: Verify Deployment
 
 ```bash
 # Check pods are running
@@ -358,18 +261,17 @@ kubectl get pods -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-au
 # Check logs
 kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler -f
 
-# Check KEDA scalers
-kubectl get scaledobject
-# NAME                    SCALETARGETKIND   SCALETARGETNAME         MIN   MAX
-# talos-proxmox-autoscaler                     talos-proxmox-autoscaler 0     1
+# Check configmap
+kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 
-# Check machine deployments
-kubectl get machinedeployment
-# NAME                DESIRED   CURRENT   UP-TO-DATE   AVAILABLE   CLASS
-# standard-workers    1         1         1            1           standard
+# Check logs
+kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler -f
+
+# Check pending pods
+kubectl get pods --field-selector=status.phase=Pending
 ```
 
-## Step 12: Test Autoscaling
+## Step 11: Test Autoscaling
 
 ```bash
 # Create a deployment that exceeds current capacity
@@ -403,14 +305,13 @@ EOF
 
 # Watch as new nodes are provisioned
 watch kubectl get nodes
-watch kubectl get machinedeployment
 watch kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler --tail=5
 
 # Clean up
 kubectl delete deploy scale-test
 ```
 
-## Step 13: Configure CI/CD
+## Step 12: Configure CI/CD
 
 The project includes GitHub Actions workflows for:
 
@@ -424,7 +325,7 @@ Required GitHub Secrets:
 - `PROXMOX_API_TOKEN_ID`
 - `PROXMOX_API_TOKEN_SECRET`
 
-## Step 14: Monitoring
+## Step 13: Monitoring
 
 The autoscaler exposes Prometheus metrics on `:8080/metrics`:
 
@@ -495,7 +396,7 @@ The deployment already includes:
 ### RBAC
 
 - The autoscaler service account has minimal permissions
-- CRD access is restricted to machineclasses (read-only), machinetemplates and machinedeployments (full access)
+- ConfigMap access for reading `autoscaler-config`
 - Core resource access is limited to nodes, pods, and events
 
 ## Post-Deployment Checklist
@@ -504,10 +405,8 @@ The deployment already includes:
 - [ ] API token tested and working
 - [ ] Talos ISO uploaded and available
 - [ ] PXE boot infrastructure configured
-- [ ] Machine classes created and visible via `kubectl get machineclasses`
-- [ ] MachineDeployments created
+- [ ] ConfigMap `autoscaler-config` created with correct VM specs
 - [ ] Autoscaler pod is running and healthy
-- [ ] KEDA scalers are active
 - [ ] Descheduler deployed (if scale-down is desired)
 - [ ] Secrets mounted as files (not env vars)
 - [ ] Test scale-up produces a new worker node

@@ -1,6 +1,6 @@
 # Talos Kubernetes Node Autoscaler for Proxmox
 
-Autoscale Talos Linux Kubernetes **worker** nodes on a Proxmox VE cluster using KEDA and a custom Go controller.
+Autoscale Talos Linux Kubernetes **worker** nodes on a Proxmox VE cluster using a lightweight Go controller. All configuration lives in a Kubernetes ConfigMap — no CRDs, no controller-runtime manager, no KEDA.
 
 ## What This Does
 
@@ -21,23 +21,26 @@ Scale range: **1–20 workers** (configurable). Three control plane nodes run pe
 ┌──────────────────────────────────────────────────────────┐
 │                    Kubernetes Cluster                     │
 │                                                          │
-│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐  │
-│  │   KEDA   │───▶│  Go Node     │───▶│  Proxmox      │  │
-│  │ Scaler   │    │  Autoscaler  │    │  REST API     │  │
-│  └──────────┘    └──────────────┘    └───────┬───────┘  │
-│       ▲                                       │          │
-│       │ watches                              │ provisions│
-│       │ unschedulable                        ▼          │
-│       │ pods                            ┌───────────┐   │
-│  ┌────┴─────┐                           │  Proxmox  │   │
-│  │  K8s API │                           │   Cluster │   │
-│  └──────────┘                           └───────────┘   │
+│  ┌──────────────┐    ┌───────────────┐                   │
+│  │  Go Node     │───▶│  Proxmox      │                   │
+│  │  Autoscaler  │    │  REST API     │                   │
+│  └──────┬───────┘    └───────┬───────┘                   │
+│         │                     │ provisions                │
+│         │ watches             ▼                           │
+│         │ unschedulable  ┌───────────┐                   │
+│  ┌──────┴─────┐          │  Proxmox  │                   │
+│  │  K8s API   │          │  Cluster  │                   │
+│  └────────────┘          └───────────┘                   │
+│                                                          │
+│  ┌────────────┐                                          │
+│  │ ConfigMap  │ autoscaler-config (VM specs, scaling)    │
+│  └────────────┘                                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
 **Boot flow:** VMs are configured with boot order `scsi0;net0`. On first boot, scsi0 is empty so the VM falls through to PXE on net0. The PXE/TFTP server serves the Talos kernel, which fetches its machine config from a remote config server matched by the VM's MAC address prefix. Talos installs itself to scsi0. On subsequent boots the VM boots directly from scsi0 with Talos already installed. There are no VM templates or cloud-init — PXE handles first boot, then the disk takes over.
 
-**Resource-aware scaling:** The controller runs a reconciliation loop every **30 seconds**. It aggregates CPU and memory requests of all unschedulable pods, calculates how many workers of the MachineClass capacity are needed, and creates that many VMs (up to `maxReplicas`).
+**Resource-aware scaling:** The controller runs a timer loop every **30 seconds**. It aggregates CPU and memory requests of all unschedulable pods, calculates how many workers are needed based on the VM specs in the ConfigMap, and creates that many VMs (up to `max_workers`).
 
 **Descheduler integration:** The controller watches for nodes labeled `descheduler.kubernetes.io/node-probable-eviction` (set by an external descheduler project that marks unneeded nodes). When detected, it cordons, drains, and deletes those nodes — handling the actual removal while the descheduler handles identification.
 
@@ -74,14 +77,13 @@ make deploy
 ```
 
 This installs:
-- CRDs for machine classes
 - The Go autoscaler controller
-- KEDA scalers for unschedulable pod detection
+- ConfigMap-based configuration (no CRDs needed)
 
 ### 4. Verify
 
 ```bash
-kubectl get machineclasses -A
+kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 kubectl get pods -n kube-system -l app=talos-node-autoscaler
 ```
 
@@ -91,46 +93,43 @@ kubectl get pods -n kube-system -l app=talos-node-autoscaler
 .
 ├── autoscaler/              # Go autoscaler entrypoint
 │   └── pkg/
-│       ├── autoscaler/      # Core autoscaling logic
+│       ├── autoscaler/      # Core controller (Config, Reconciler)
 │       └── proxmox/         # Proxmox REST API client
 ├── kubernetes/
-│   ├── crds/                # CRD manifests
 │   ├── rbac/                # RBAC manifests
-│   ├── keda/                # KEDA ScaledObject manifests
-│   └── deployment.yaml      # Controller deployment
+│   ├── deployment.yaml      # Controller deployment
+│   ├── configmap.yaml       # autoscaler-config ConfigMap
+│   └── namespace.yaml
 ├── examples/
-│   ├── machine-classes/     # Example MachineClass CRs
 │   └── 3-node-cluster/      # Full cluster example
 ├── docs/
 │   ├── README.md            # This file
 │   ├── ARCHITECTURE.md      # Detailed architecture
 │   ├── DEPLOYMENT.md        # Deployment guide
-│   ├── TROUBLESHOOTING.md   # Common issues
-│   └── CRD_REFERENCE.md     # CRD API reference
+│   └── TROUBLESHOOTING.md   # Common issues
 ├── Makefile
 ├── Dockerfile
 └── .github/workflows/       # CI/CD pipelines
 ```
 
-## Machine Classes (CRDs)
+## Machine Configuration (ConfigMap)
 
-Define custom resources to declare worker node types:
+VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-config` in the `autoscaler-system` namespace. Keys map directly to controller fields:
 
-```yaml
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineClass
-metadata:
-  name: standard
-spec:
-  vcpu: 4
-  memoryGiB: 8
-  diskGiB: 50
-  networkBridge: vmbr0
-  storagePool: local-lvm
-  proxmoxPool: k8s-workers
-```
+| Key | Description |
+|-----|-------------|
+| `vcpu` | Number of virtual CPUs |
+| `memory_gib` | Memory in GiB |
+| `disk_gib` | Disk size in GiB |
+| `storage_pool` | Proxmox storage pool |
+| `network_bridge` | Proxmox bridge name |
+| `mac_address` | MAC address for PXE config lookup (optional) |
+| `serial` | SMBIOS serial for identification (optional) |
+| `cluster_name` | Kubernetes cluster name |
+| `min_workers` | Minimum worker count |
+| `max_workers` | Maximum worker count |
 
-See [CRD Reference](CRD_REFERENCE.md) for the full specification.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 ## Security
 
@@ -148,7 +147,6 @@ See [Deployment Guide](DEPLOYMENT.md#security-hardening) for details.
 - [Architecture](ARCHITECTURE.md) - How it all fits together
 - [Deployment Guide](DEPLOYMENT.md) - Step-by-step setup
 - [Troubleshooting](TROUBLESHOOTING.md) - When things go wrong
-- [CRD Reference](CRD_REFERENCE.md) - API types and fields
 
 ## License
 

@@ -3,13 +3,10 @@ kind: ConfigMap
 metadata:
   name: autoscaler-config
   namespace: autoscaler-system
-  labels:
-    app.kubernetes.io/name: talos-proxmox-autoscaler
-    app.kubernetes.io/component: autoscaler
 data:
   cluster_name: "talos"
   min_workers: "1"
-  max_workers: "20"
+  max_workers: "10"
   vcpu: "4"
   memory_gib: "8"
   disk_gib: "100"

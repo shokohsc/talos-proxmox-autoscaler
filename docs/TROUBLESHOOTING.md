@@ -11,12 +11,8 @@ Run this first to get an overview:
 kubectl get pods -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler
 kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler --tail=50
 
-# Machine state
-kubectl get machineclasses
-kubectl get machinedeployment
-
-# KEDA state
-kubectl get scaledobject
+# ConfigMap state
+kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 
 # Pending pods
 kubectl get pods --field-selector=status.phase=Pending
@@ -48,6 +44,7 @@ kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autosc
 | `context deadline exceeded` | Network issue | Check firewall rules to Proxmox |
 | `namespace not found` | Missing namespace | Create namespace or fix deployment manifest |
 | `secret not found` | Missing secrets | Create the autoscaler-secrets secret |
+| `configmap not found` | Missing ConfigMap | Create the autoscaler-config ConfigMap |
 
 **Fix:**
 ```bash
@@ -69,12 +66,11 @@ kubectl create secret generic autoscaler-secrets \
 **Symptoms:**
 - Pods stuck in `Pending` with `FailedScheduling`
 - Autoscaler logs show `creating VM` but no new VMs appear
-- MachineDeployment status shows `replicas: 1, readyReplicas: 1` but pods remain pending
 
 **Diagnosis:**
 ```bash
 # Check autoscaler events
-kubectl get events -n autoscaler-system --field-selector involvedObject.kind=MachineDeployment
+kubectl get events -n autoscaler-system
 
 # Check Proxmox for new VMs
 ssh root@10.0.1.11 "qm list | grep worker"
@@ -86,10 +82,11 @@ ssh root@10.0.1.11 "qm list | grep worker"
 |-------|---------|-----|
 | Disk space full | API call fails with "no space on device" | Free Proxmox storage or increase disk |
 | VMID conflict | API call fails with "already exists" | Check `BASE_VMID`, clear stale VMIDs |
-| Bridge misconfigured | VM created but no network | Verify `K8S_BRIDGE` matches Proxmox bridge name |
+| Bridge misconfigured | VM created but no network | Verify ConfigMap `network_bridge` matches Proxmox bridge name |
 | Token expired | Nodes can't join cluster | Rotate bootstrap token |
-| Storage pool wrong | API call fails with pool error | Verify `storagePool` in MachineClass matches Proxmox |
+| Storage pool wrong | API call fails with pool error | Verify ConfigMap `storage_pool` matches Proxmox |
 | API auth failure | 401 Unauthorized from Proxmox | Verify API token ID and secret |
+| ConfigMap missing | Controller can't read VM specs | Create the autoscaler-config ConfigMap |
 
 **Fix:**
 ```bash
@@ -172,7 +169,7 @@ ssh root@10.0.1.11 "qm config 203 | grep net0"
 |-------|-----|
 | Boot order wrong | Set `scsi0;net0` as boot order — scsi0 first (empty on first boot falls through to PXE) |
 | PXE server not responding | Restart TFTP/DHCP services |
-| MAC address mismatch | Verify MachineClass `macAddress` matches what Proxmox assigns |
+| MAC address mismatch | Verify ConfigMap `mac_address` matches what Proxmox assigns |
 | Config server doesn't have entry for MAC | Add MAC to config server's mapping |
 | Network bridge disconnected | Verify VM is on correct bridge |
 
@@ -181,7 +178,7 @@ ssh root@10.0.1.11 "qm config 203 | grep net0"
 # Set boot order to scsi0;net0 (scsi0 first, PXE fallback)
 ssh root@10.0.1.11 "qm set 203 --boot order=scsi0;net0"
 
-# Verify MAC address in Proxmox matches MachineClass
+# Verify MAC address in Proxmox matches ConfigMap
 ssh root@10.0.1.11 "qm config 203 | grep net0"
 # net0: virtio=52:54:00:AA:BB:CC,bridge=vmbr0
 ```
@@ -190,7 +187,6 @@ ssh root@10.0.1.11 "qm config 203 | grep net0"
 
 **Symptoms:**
 - Cluster has many nodes but utilization is low
-- MachineDeployment replicas don't decrease
 - Autoscaler logs show no eviction activity
 
 **Diagnosis:**
@@ -220,16 +216,9 @@ kubectl get pdb -A
 
 **Fix:**
 ```bash
-# Check PDBs blocking drain
-kubectl get pdb -A
-kubectl describe pdb <name>
-
-# Temporarily disable PDB (only if safe)
-kubectl delete pdb <name>
-
 # Force scale down (emergency only)
-kubectl patch machinedeployment standard-workers \
-  -p '{"spec":{"replicas":1}}'
+# Edit the ConfigMap to set min_workers to 0
+kubectl edit configmap autoscaler-config -n autoscaler-system
 ```
 
 ### 6. High Latency During Scale-Up
@@ -340,8 +329,8 @@ ping -c 5 10.0.1.10
 
 **Symptoms:**
 ```
-Error from server (Forbidden): autoscaler.talos.dev "standard" is forbidden:
-  User "system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler" cannot list resource "machinetemplates"
+Error from server (Forbidden): configmaps "autoscaler-config" is forbidden:
+  User "system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler" cannot list resource "configmaps"
 ```
 
 **Fix:**
@@ -350,7 +339,7 @@ Error from server (Forbidden): autoscaler.talos.dev "standard" is forbidden:
 kubectl apply -f kubernetes/rbac/
 
 # Verify permissions
-kubectl auth can-i list machinetemplates --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
+kubectl auth can-i list configmaps --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
 # yes
 
 kubectl auth can-i create events --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
@@ -431,9 +420,8 @@ If the above doesn't resolve your issue:
    # Autoscaler logs
    kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler --all-containers > /tmp/autoscaler-logs.txt
 
-   # Machine state
-   kubectl get machineclasses -o yaml > /tmp/machineclasses.yaml
-   kubectl get machinedeployment -o yaml > /tmp/machinedeployment.yaml
+# Machine state
+kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 
    # Proxmox status
    ssh root@10.0.1.11 "qm list" > /tmp/proxmox-vms.txt
@@ -447,21 +435,23 @@ If the above doesn't resolve your issue:
 To completely stop autoscaling without destroying existing nodes:
 
 ```bash
-# Pause the MachineDeployment
-kubectl patch machinedeployment standard-workers \
-  -p '{"spec":{"paused":true}}'
+# Set min_workers and max_workers to 0 in the ConfigMap
+kubectl patch configmap autoscaler-config -n autoscaler-system \
+  --type merge -p '{"data":{"min_workers":"0","max_workers":"0"}}'
 
-# Or scale to 0 replicas (this will drain and destroy workers)
-kubectl patch machinedeployment standard-workers \
-  -p '{"spec":{"replicas":0}}'
+# Restart the controller to pick up changes
+kubectl rollout restart deployment/talos-proxmox-autoscaler -n autoscaler-system
 ```
 
 ### Destroy All Workers
 
 ```bash
-# Scale all deployments to 0
-kubectl get machinedeployment -o name | xargs -I {} \
-  kubectl patch {} -p '{"spec":{"replicas":0}}'
+# Set max_workers to 0 in the ConfigMap
+kubectl patch configmap autoscaler-config -n autoscaler-system \
+  --type merge -p '{"data":{"max_workers":"0","min_workers":"0"}}'
+
+# Restart the controller
+kubectl rollout restart deployment/talos-proxmox-autoscaler -n autoscaler-system
 
 # Wait for drain to complete, then verify
 kubectl get nodes

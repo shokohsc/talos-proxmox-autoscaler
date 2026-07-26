@@ -30,19 +30,7 @@ spec:
         - name: autoscaler
           image: ghcr.io/your-org/talos-proxmox-autoscaler:latest
           imagePullPolicy: Always
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
           env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: PROXMOX_API_TOKEN_ID_FILE
-              value: "/etc/secrets/proxmox_api_token_id"
-            - name: PROXMOX_API_TOKEN_SECRET_FILE
-              value: "/etc/secrets/proxmox_api_token_secret"
             - name: PROXMOX_API_URL
               valueFrom:
                 configMapKeyRef:
@@ -65,6 +53,10 @@ spec:
                   name: autoscaler-config
                   key: base_vmid
                   optional: true
+            - name: PROXMOX_API_TOKEN_ID_FILE
+              value: "/etc/secrets/proxmox_api_token_id"
+            - name: PROXMOX_API_TOKEN_SECRET_FILE
+              value: "/etc/secrets/proxmox_api_token_secret"
           volumeMounts:
             - name: secrets
               mountPath: /etc/secrets
@@ -78,17 +70,16 @@ spec:
           resources:
             requests:
               cpu: 50m
-              memory: 128Mi
+              memory: 64Mi
             limits:
-              cpu: 500m
-              memory: 512Mi
+              cpu: 200m
+              memory: 128Mi
       volumes:
         - name: secrets
           secret:
             secretName: autoscaler-secrets
       nodeSelector:
         kubernetes.io/os: linux
-      priorityClassName: system-cluster-critical
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

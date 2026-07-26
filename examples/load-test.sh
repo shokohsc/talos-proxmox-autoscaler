@@ -85,4 +85,4 @@ kubectl delete deployment load-test -n "$NAMESPACE" --ignore-not-found
 
 echo ""
 echo "Done. Pods will be evicted as nodes scale down."
-echo "Monitor with: kubectl get machinedeployments -n talos-system -w"
+echo "Monitor with: kubectl get nodes -w"

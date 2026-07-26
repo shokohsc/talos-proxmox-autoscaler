@@ -1,11 +1,11 @@
 # Talos Kubernetes Node Autoscaler for Proxmox
 
-A controller-runtime based autoscaler that watches for unschedulable pods and provisions Talos Linux worker VMs on Proxmox VE via the Proxmox REST API.
+A lightweight Go autoscaler that watches for unschedulable pods and provisions Talos Linux worker VMs on Proxmox VE via the Proxmox REST API. Configuration is driven entirely by a Kubernetes ConfigMap — no CRDs, no controller-runtime manager, no KEDA.
 
 ## How It Works
 
 ```
-Unschedulable Pods → Controller (30s reconcile) → Proxmox API → VM
+Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
     → PXE Boot (scsi0 empty → net0) → Talos Config Server → Worker joins cluster
 ```
 
@@ -27,43 +27,39 @@ Unschedulable Pods → Controller (30s reconcile) → Proxmox API → VM
 
 ## Key Features
 
-- **Resource-aware sizing** — 30s reconciliation window aggregates pending pod CPU/memory requests, calculates exactly how many workers are needed based on MachineClass capacity
+- **Resource-aware sizing** — 30s timer loop aggregates pending pod CPU/memory requests, calculates exactly how many workers are needed based on VM specs from ConfigMap
 - **Descheduler integration** — watches for nodes labeled `descheduler.kubernetes.io/node-probable-eviction`, then cordons, drains, and destroys them
 - **Workers-only** — 3 control planes run permanently, never managed by the autoscaler
 - **PXE boot** — boot order `scsi0;net0`, first boot PXE-fetches Talos kernel, installs to disk, subsequent boots from scsi0
-- **Machine classes** — define worker tiers (tiny/standard/gpu/storage) as CRDs
-- **Optional MAC/SMBIOS** — explicit `macAddress` for PXE config lookup, `serial` for identification
+- **ConfigMap-based config** — all VM specs, cluster settings, and scaling parameters live in a single `autoscaler-config` ConfigMap (no CRDs)
+- **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
 ## Project Structure
 
 ```
 .
 ├── autoscaler/
-│   ├── main.go
+│   ├── main.go                  # Entry point (direct K8s client, no controller-runtime)
 │   ├── Dockerfile
 │   ├── Makefile
 │   └── pkg/
-│       ├── autoscaler/          # Controller, types
+│       ├── autoscaler/          # Controller (Config, Reconciler)
+│       │   └── controller.go
 │       └── proxmox/             # Proxmox REST API client
 ├── kubernetes/
-│   ├── crds/                    # MachineClass, MachineDeployment CRDs
 │   ├── rbac/                    # ServiceAccount, ClusterRole, Binding
-│   ├── keda/                    # ScaledObject manifests
 │   ├── deployment.yaml          # Controller deployment
-│   ├── configmap.yaml
+│   ├── configmap.yaml           # autoscaler-config ConfigMap
 │   ├── namespace.yaml
 │   └── networkpolicy.yaml
 ├── examples/
-│   ├── machine-classes/         # Example MachineClass CRs
 │   ├── 3-node-cluster/          # Full cluster example
-│   ├── test-pod.yaml
 │   └── load-test.sh
 ├── docs/
 │   ├── README.md
 │   ├── ARCHITECTURE.md
 │   ├── DEPLOYMENT.md
-│   ├── TROUBLESHOOTING.md
-│   └── CRD_REFERENCE.md
+│   └── TROUBLESHOOTING.md
 ├── .github/workflows/
 │   ├── ci.yaml
 │   ├── release.yaml
@@ -85,48 +81,65 @@ Unschedulable Pods → Controller (30s reconcile) → Proxmox API → VM
 ### Install
 
 ```bash
-# Apply CRDs
-kubectl apply -f kubernetes/crds/
+# Create the namespace
+kubectl apply -f kubernetes/namespace.yaml
+
+# Apply the ConfigMap with VM specs, scaling, and cluster settings
+kubectl apply -f kubernetes/configmap.yaml
 
 # Apply RBAC
 kubectl apply -f kubernetes/rbac/
 
-# Create MachineClasses (tiny, standard, gpu, storage)
-kubectl apply -f examples/machine-classes/
+# Create the secrets for Proxmox API access
+kubectl create secret generic autoscaler-secrets \
+  --from-literal=proxmox_api_token_id="autoscaler@pve!autoscaler=YOUR_TOKEN_ID" \
+  --from-literal=proxmox_api_token_secret="YOUR_TOKEN_SECRET" \
+  -n autoscaler-system
 
-# Create a MachineDeployment
-cat <<EOF | kubectl apply -f -
-apiVersion: autoscaler.talos.dev/v1alpha1
-kind: MachineDeployment
-metadata:
-  name: standard-workers
-spec:
-  replicas: 1
-  machineClassName: standard
-  minReplicas: 1
-  maxReplicas: 20
-  template:
-    spec:
-      bootTimeout: "5m"
-EOF
+# Deploy the autoscaler
+kubectl apply -f kubernetes/deployment.yaml
 
-# Build and deploy
-cd autoscaler && make build
+# Apply the NetworkPolicy (restricts traffic to Proxmox API only)
+kubectl apply -f kubernetes/networkpolicy.yaml
 ```
+
+### ConfigMap Reference
+
+The `autoscaler-config` ConfigMap drives all behavior. The key fields you'll need to customize:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: autoscaler-config
+  namespace: autoscaler-system
+data:
+  cluster_name: "talos"          # Talos cluster name
+  min_workers: "1"               # Minimum worker nodes
+  max_workers: "20"              # Maximum worker nodes
+  vcpu: "4"                      # CPUs per worker VM
+  memory_gib: "8"                # RAM per worker VM (GiB)
+  disk_gib: "100"                # Disk per worker VM (GiB)
+  storage_pool: "local-lvm"      # Proxmox storage for VM disks
+  network_bridge: "vmbr0"        # Proxmox bridge for VM NICs
+  proxmox_api_url: "https://pve.example.com:8006"  # Proxmox API endpoint
+  proxmox_node: "pve"            # Proxmox node to create VMs on
+  base_vmid: "2000"              # Starting VMID for new workers
+```
+
+Optional fields: `mac_address`, `serial`, `proxmox_insecure`. See the full `kubernetes/configmap.yaml` for all keys.
 
 ### Verify
 
 ```bash
-kubectl get machineclasses
-kubectl get machinedeployment
+kubectl get configmap autoscaler-config -n autoscaler-system
 kubectl get pods -n autoscaler-system
 ```
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md) — Components, data flow, failure modes
-- [Deployment Guide](docs/DEPLOYMENT.md) — Step-by-step setup including secrets, Proxmox API user, KEDA, descheduler
-- [CRD Reference](docs/CRD_REFERENCE.md) — MachineClass, MachineDeployment fields
+- [Deployment Guide](docs/DEPLOYMENT.md) — Step-by-step setup including secrets, Proxmox API user, ConfigMap, descheduler
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — Common issues and solutions
 
 ## CI/CD

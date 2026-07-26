@@ -4,7 +4,7 @@ Detailed architecture of the Talos Kubernetes Node Autoscaler for Proxmox.
 
 ## System Overview
 
-The autoscaler operates as a closed control loop that **only manages worker nodes**. Control plane nodes (3 permanent) are provisioned and managed outside this system.
+The autoscaler operates as a closed control loop that **only manages worker nodes**. Control plane nodes (3 permanent) are provisioned and managed outside this system. Configuration is read from a Kubernetes ConfigMap (`autoscaler-config` in `autoscaler-system` namespace).
 
 ```
                     ┌─────────────────────────────────┐
@@ -17,14 +17,19 @@ The autoscaler operates as a closed control loop that **only manages worker node
                     │   Go Autoscaler      │
                     │                      │
                     │  ┌────────────────┐  │
-                    │  │ Reconcile Loop │  │
-                    │  │   (30s tick)   │  │
+                    │  │  30s Timer     │  │
+                    │  │  Loop          │  │
                     │  └───────┬────────┘  │
                     │          │           │
                     │  ┌───────▼────────┐  │
                     │  │  Scale Decision │  │
                     │  │   Engine        │  │
                     │  └───────┬────────┘  │
+                    │          │           │
+                    │  ┌───────▼────────┐  │
+                    │  │  ConfigMap     │  │
+                    │  │  Reader        │  │
+                    │  └────────────────┘  │
                     └──────────┼───────────┘
                                │
                     ┌──────────▼───────────┐
@@ -42,46 +47,25 @@ The autoscaler operates as a closed control loop that **only manages worker node
 
 ### 1. Go Autoscaler Controller
 
-The core control loop runs inside the Kubernetes cluster.
+The core control loop runs inside the Kubernetes cluster as a standard Go binary (no controller-runtime manager). It reads all configuration from a ConfigMap and uses `rest.InClusterConfig()` to talk to the Kubernetes API.
 
-**Reconciliation cycle (every 30 seconds):**
-1. List pods with `status.conditions` containing `PodScheduled=False, reason=Unschedulable`
-2. Aggregate CPU and memory requests of all unschedulable pods
-3. Calculate how many workers of the MachineClass capacity are needed to fit them
-4. Create that many VMs (up to `maxReplicas`), if current count is insufficient
-5. Wait for nodes to register in the Kubernetes API
-6. Update MachineDeployment status
+**Timer loop (every 30 seconds):**
+1. Read config from `autoscaler-config` ConfigMap
+2. List pods with `status.conditions` containing `PodScheduled=False, reason=Unschedulable`
+3. Aggregate CPU and memory requests of all unschedulable pods
+4. Calculate how many workers are needed based on VM specs from ConfigMap (vcpu, memory_gib)
+5. Create that many VMs (up to `max_workers`), if current count is insufficient
+6. Wait for nodes to register in the Kubernetes API
 
-**Resource-aware sizing:** The controller does not just count pods — it sums their CPU and memory requests and divides by the MachineClass capacity (vCPU, memoryGiB) to determine exactly how many new workers are needed.
+**Resource-aware sizing:** The controller does not just count pods — it sums their CPU and memory requests and divides by the VM capacity (vcpu, memory_gib from ConfigMap) to determine exactly how many new workers are needed.
 
 **Key files:**
 ```
-autoscaler/main.go
-autoscaler/pkg/autoscaler/controller.go
+autoscaler/main.go              # Entry point, direct K8s client setup
+autoscaler/pkg/autoscaler/controller.go  # Config struct, Reconciler struct
 ```
 
-### 2. KEDA Integration
-
-KEDA provides external metrics that drive scaling decisions. The ScaledObject uses an external scaler trigger that communicates with the autoscaler's gRPC interface:
-
-| ScaledObject | Metric | Purpose |
-|--------------|--------|---------|
-| `talos-proxmox-autoscaler` | External scaler | Scale based on unschedulable pods and node utilization |
-
-**Scale-up trigger:**
-```
-unschedulable_pod_count > 0  →  scale up by ceil(count / pods_per_node)
-```
-
-**Scale-down trigger (descheduler-driven):**
-```
-node labeled descheduler.kubernetes.io/node-probable-eviction
-  → cordon, drain, and delete the node
-```
-
-The autoscaler does not perform its own utilization-based scale-down. Instead, an external descheduler project analyzes node utilization and labels unneeded nodes with `descheduler.kubernetes.io/node-probable-eviction`. The autoscaler watches for this label and handles the actual node removal (cordon, drain, VM destroy).
-
-### 3. Proxmox REST API Client
+### 2. Proxmox REST API Client
 
 Direct HTTP client that manages VM lifecycle on Proxmox using API token authentication.
 
@@ -107,7 +91,7 @@ Direct HTTP client that manages VM lifecycle on Proxmox using API token authenti
 ```
 
 **VM Provisioning Flow:**
-1. Generate VM config from machine class spec (CPU, RAM, disk, network)
+1. Generate VM config from ConfigMap values (CPU, RAM, disk, network)
 2. Call Proxmox API to clone from template or create from scratch
 3. Start the VM via API call
 4. VM PXE-boots Talos Linux, fetching config from remote config server
@@ -162,31 +146,28 @@ Proxmox Cluster (3 nodes)
 - Control planes: pinned to specific Proxmox nodes (managed outside autoscaler)
 - Workers: placed by Proxmox HA scheduler (least-loaded)
 
-## CRD Types
+## Go Types
 
 ```go
-// MachineClass defines a class of worker nodes
-type MachineClass struct {
-    metav1.TypeMeta   `json:",inline"`
-    metav1.ObjectMeta `json:"metadata,omitempty"`
-    Spec   MachineClassSpec   `json:"spec"`
-    Status MachineClassStatus `json:"status,omitempty"`
+// Config holds all configuration read from the autoscaler-config ConfigMap
+type Config struct {
+    ClusterName  string
+    MinWorkers   int
+    MaxWorkers   int
+    Vcpu         int
+    MemoryGiB    int
+    DiskGiB      int
+    StoragePool  string
+    NetworkBridge string
+    MacAddress   string
+    Serial       string
 }
 
-// MachineTemplate tracks a specific VM instance
-type MachineTemplate struct {
-    metav1.TypeMeta   `json:",inline"`
-    metav1.ObjectMeta `json:"metadata,omitempty"`
-    Spec   MachineTemplateSpec   `json:"spec"`
-    Status MachineTemplateStatus `json:"status,omitempty"`
-}
-
-// MachineDeployment manages a pool of machines for a class
-type MachineDeployment struct {
-    metav1.TypeMeta   `json:",inline"`
-    metav1.ObjectMeta `json:"metadata,omitempty"`
-    Spec   MachineDeploymentSpec   `json:"spec"`
-    Status MachineDeploymentStatus `json:"status,omitempty"`
+// Reconciler runs the 30s timer loop, reads Config, and manages VMs via Proxmox API
+type Reconciler struct {
+    Client    kubernetes.Interface
+    Proxmox   *proxmox.Client
+    Config    *Config
 }
 ```
 
@@ -198,18 +179,16 @@ type MachineDeployment struct {
 1. Pod created, no node can fit it
          │
          ▼
-2. KEDA detects unschedulable pod count > 0
+2. Go controller 30s timer fires
          │
          ▼
-3. KEDA signals autoscaler via external scaler
+3. Controller aggregates CPU/memory requests of all unschedulable pods
          │
          ▼
-4. Go controller reconciles (every 30s), aggregates CPU/memory
-   requests of all unschedulable pods
+4. Controller reads VM specs from autoscaler-config ConfigMap
          │
          ▼
-5. Controller calculates how many workers of the MachineClass
-   capacity are needed (resource-aware sizing)
+5. Controller calculates how many workers are needed (resource-aware sizing)
          │
          ▼
 6. Controller calls Proxmox API to create new VM(s)
@@ -284,7 +263,7 @@ Service CIDR: 10.96.0.0/12
 ## High Availability
 
 - **Control planes**: 3 permanent nodes, managed outside the autoscaler
-- **Workers**: scaled dynamically based on unschedulable pod resource requests, always maintain at least `minWorkers` nodes
+- **Workers**: scaled dynamically based on unschedulable pod resource requests, always maintain at least `min_workers` nodes
 - **Node drain**: uses standard Kubernetes grace period (30s default)
 - **Proxmox HA**: VMs marked with Proxmox HA group for automatic restart on node failure
 
@@ -293,7 +272,7 @@ Service CIDR: 10.96.0.0/12
 | Failure | Impact | Recovery |
 |---------|--------|----------|
 | Proxmox API unreachable | Cannot provision/destroy VMs | Controller retries with exponential backoff |
-| KEDA metrics unavailable | Scale-up pauses | Falls back to reconciliation-only mode |
+| ConfigMap missing or invalid | Cannot read VM specs or scaling params | Controller logs error and waits for ConfigMap update |
 | Descheduler not running | No scale-down occurs | Nodes stay alive; deploy/fix descheduler |
 | Node fails to join cluster | VM exists but unused | Controller detects and destroys after 5m timeout |
 | Drain timeout exceeded | Node stays cordoned | Force-delete after configurable timeout |
