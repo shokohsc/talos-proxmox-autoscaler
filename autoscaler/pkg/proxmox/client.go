@@ -3,6 +3,7 @@ package proxmox
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -213,6 +214,11 @@ func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) 
 }
 
 func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error {
+	mac := config.MACAddress
+	if mac == "" {
+		mac = randomMAC()
+	}
+
 	params := url.Values{}
 	params.Set("vmid", strconv.Itoa(config.VMID))
 	params.Set("name", config.Name)
@@ -220,18 +226,18 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	params.Set("memory", strconv.Itoa(int(config.MemoryMiB)))
 	params.Set("scsihw", "virtio-scsi-single")
 	params.Set("scsi0", fmt.Sprintf("%s:0,iothread=1", config.StoragePool))
-	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", config.MACAddress, config.NetworkBridge))
+	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", mac, config.NetworkBridge))
 	params.Set("boot", "order=scsi0;net0")
 
 	if config.VLANID > 0 {
-		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s,tag=%d", config.MACAddress, config.NetworkBridge, config.VLANID))
+		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s,tag=%d", mac, config.NetworkBridge, config.VLANID))
 	}
 
 	if config.DiskGiB > 0 {
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
 	if config.Serial != "" {
-		params.Set("serial0", fmt.Sprintf("socket=%s", config.Serial))
+		params.Set("serial0", config.Serial)
 	}
 	if config.Tags != "" {
 		params.Set("tags", config.Tags)
@@ -288,7 +294,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("net0", net0)
 	}
 	if config.Serial != "" {
-		params.Set("serial0", fmt.Sprintf("socket=%s", config.Serial))
+		params.Set("serial0", config.Serial)
 	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
@@ -471,4 +477,10 @@ func (c *Client) ResolveNode(ctx context.Context) error {
 	}
 	c.node = node
 	return nil
+}
+
+func randomMAC() string {
+	b := make([]byte, 3)
+	_, _ = crand.Read(b)
+	return fmt.Sprintf("52:54:%02x:%02x:%02x", b[0], b[1], b[2])
 }

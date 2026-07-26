@@ -464,6 +464,56 @@ func TestCreateVMFromScratch_NoVLANWhenZero(t *testing.T) {
 	assert.NotContains(t, gotQuery, "tag")
 }
 
+func TestCreateVMFromScratch_AutoMAC(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "net0")
+	assert.Contains(t, gotQuery, "52%3A54") // URL-encoded "52:54" prefix
+}
+
+func TestCreateVMFromScratch_Serial(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		Serial:        "socket",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "serial0")
+	assert.Contains(t, gotQuery, "socket")
+	assert.NotContains(t, gotQuery, "socket%3Dsocket")
+}
+
 func TestStartVM(t *testing.T) {
 	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
