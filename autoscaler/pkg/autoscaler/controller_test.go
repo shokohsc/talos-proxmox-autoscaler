@@ -503,7 +503,7 @@ func TestScaleUp(t *testing.T) {
 		_ = r.ParseForm()
 		if vmid := r.FormValue("vmid"); vmid != "" {
 			var v int
-			fmt.Sscanf(vmid, "%d", &v)
+			_, _ = fmt.Sscanf(vmid, "%d", &v)
 			createdVMs = append(createdVMs, v)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -832,7 +832,7 @@ func newMockProxmoxServer(t *testing.T, deletedVMID *int) *httptest.Server {
 			// Extract VMID from path like /api2/json/nodes/pve/qemu/1000
 			parts := strings.Split(r.URL.Path, "/")
 			if len(parts) >= 6 {
-				fmt.Sscanf(parts[len(parts)-1], "%d", deletedVMID)
+				_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", deletedVMID)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 			return
@@ -858,7 +858,7 @@ func newMockProxmoxServerBatch(t *testing.T, deletedVMIDs *[]int) *httptest.Serv
 			parts := strings.Split(r.URL.Path, "/")
 			if len(parts) >= 6 {
 				var vmid int
-				fmt.Sscanf(parts[len(parts)-1], "%d", &vmid)
+				_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", &vmid)
 				*deletedVMIDs = append(*deletedVMIDs, vmid)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
