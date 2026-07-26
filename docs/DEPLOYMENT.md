@@ -229,6 +229,12 @@ Verify:
 kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 ```
 
+**Important:** Environment variables sourced from the ConfigMap are set at pod creation time and don't update when the ConfigMap changes. After modifying the ConfigMap, restart the autoscaler to apply:
+
+```bash
+kubectl rollout restart deployment/talos-proxmox-autoscaler -n autoscaler-system
+```
+
 ## Step 7: Install RBAC and Service Accounts
 
 ```bash

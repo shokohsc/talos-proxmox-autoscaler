@@ -390,7 +390,17 @@ tcpdump -i vmbr0 port 6443 -n
 
 ## Log Levels
 
-Set log verbosity in the autoscaler deployment:
+Control verbosity via the `LOG_LEVEL` environment variable. Supported values:
+
+| Level | klog Verbosity | Description |
+|-------|----------------|-------------|
+| `trace` | 5 | All API calls and internal state |
+| `debug` | 3 | Config loading, pending pods, scale decisions |
+| `info` | 1 | Evictions, VM creation (default) |
+| `warn` | 0 | Warnings and errors only |
+| `error` | 0 | Errors only |
+
+Set in the deployment:
 
 ```yaml
 env:
@@ -400,9 +410,15 @@ env:
   value: "json"  # json, text
 ```
 
-Debug mode:
+Change at runtime:
 ```bash
 kubectl set env deployment/talos-proxmox-autoscaler -n autoscaler-system LOG_LEVEL=debug
+```
+
+**Note:** Changing `LOG_LEVEL` via `kubectl set env` requires a pod restart to take effect:
+
+```bash
+kubectl rollout restart deployment/talos-proxmox-autoscaler -n autoscaler-system
 ```
 
 ## Health Checks
