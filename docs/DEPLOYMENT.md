@@ -147,8 +147,10 @@ curl -s -H "Authorization: PVEAPIToken=autoscaler@pve!autoscaler=${PROXMOX_API_T
 
 Secrets should be mounted as files, not passed as environment variables. Environment variables are visible in `kubectl describe pod` output and can leak into logs.
 
+**Option A: API Token Auth (recommended)**
+
 ```bash
-# Create a secret with individual keys
+# Create a secret with API token credentials
 kubectl create secret generic autoscaler-secrets \
   --from-literal=PROXMOX_API_TOKEN_ID="${PROXMOX_API_TOKEN_ID}" \
   --from-literal=PROXMOX_API_TOKEN_SECRET="${PROXMOX_API_TOKEN_SECRET}" \
@@ -156,6 +158,20 @@ kubectl create secret generic autoscaler-secrets \
   --from-literal=CA_CERT_B64="${CA_CERT_B64}" \
   -n autoscaler-system
 ```
+
+**Option B: Username/Password Auth**
+
+```bash
+# Create a secret with username and password
+kubectl create secret generic autoscaler-secrets \
+  --from-literal=PROXMOX_USERNAME="root@pam" \
+  --from-literal=PROXMOX_PASSWORD="${PROXMOX_PASSWORD}" \
+  --from-literal=CLUSTER_TOKEN="${CLUSTER_TOKEN}" \
+  --from-literal=CA_CERT_B64="${CA_CERT_B64}" \
+  -n autoscaler-system
+```
+
+The autoscaler auto-detects which auth method to use based on which secret fields are present. If `proxmox_password` exists, it uses username/password auth; otherwise it uses API token auth.
 
 The deployment mounts these as files at `/etc/secrets/`. See `kubernetes/deployment.yaml` for the volume mount configuration.
 
@@ -177,9 +193,11 @@ metadata:
   name: autoscaler-config
   namespace: autoscaler-system
 data:
-  # VM specs
-  vcpu: "4"
-  memory_gib: "8"
+  # VM specs (dynamic sizing)
+  min_cpu: "2"
+  max_cpu: "8"
+  min_memory_gib: "4"
+  max_memory_gib: "16"
   disk_gib: "50"
   storage_pool: "local-lvm"
   network_bridge: "vmbr0"
@@ -187,6 +205,12 @@ data:
   # Optional: explicit MAC for PXE config lookup
   # mac_address: "52:54:00:AA:BB:CC"
   # serial: "worker-standard-001"
+
+  # Optional: tags applied to provisioned VMs
+  tags: "autoscaler,worker"
+
+  # Optional: PCI passthrough devices (JSON array)
+  # pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'
 
   # Scaling
   cluster_name: "k8s"

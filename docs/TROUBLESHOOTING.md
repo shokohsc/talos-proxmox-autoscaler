@@ -51,11 +51,20 @@ kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autosc
 # Verify the secret exists and has correct keys
 kubectl get secret autoscaler-secrets -n autoscaler-system -o yaml
 
-# Recreate if needed
+# Recreate if needed (API token auth)
 kubectl delete secret autoscaler-secrets -n autoscaler-system
 kubectl create secret generic autoscaler-secrets \
   --from-literal=PROXMOX_API_TOKEN_ID="autoscaler@pve!autoscaler=..." \
   --from-literal=PROXMOX_API_TOKEN_SECRET="..." \
+  --from-literal=CLUSTER_TOKEN="..." \
+  --from-literal=CA_CERT_B64="..." \
+  -n autoscaler-system
+
+# Or recreate with username/password auth
+kubectl delete secret autoscaler-secrets -n autoscaler-system
+kubectl create secret generic autoscaler-secrets \
+  --from-literal=PROXMOX_USERNAME="root@pam" \
+  --from-literal=PROXMOX_PASSWORD="..." \
   --from-literal=CLUSTER_TOKEN="..." \
   --from-literal=CA_CERT_B64="..." \
   -n autoscaler-system

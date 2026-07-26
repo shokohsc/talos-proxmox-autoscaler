@@ -27,11 +27,16 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 
 ## Key Features
 
-- **Resource-aware sizing** — 30s timer loop aggregates pending pod CPU/memory requests, calculates exactly how many workers are needed based on VM specs from ConfigMap
+- **Dynamic VM sizing** — autoscaler chooses CPU/RAM for each batch of pending pods between configurable min/max ranges (optimal fit)
+- **Resource-aware scaling** — 30s timer loop aggregates pending pod CPU/memory requests, calculates exactly how many workers are needed
 - **Descheduler integration** — watches for nodes labeled `descheduler.kubernetes.io/node-probable-eviction`, then cordons, drains, and destroys them
 - **Workers-only** — 3 control planes run permanently, never managed by the autoscaler
 - **PXE boot** — boot order `scsi0;net0`, first boot PXE-fetches Talos kernel, installs to disk, subsequent boots from scsi0
 - **ConfigMap-based config** — all VM specs, cluster settings, and scaling parameters live in a single `autoscaler-config` ConfigMap (no CRDs)
+- **Dual auth** — supports both Proxmox API token and username/password authentication (auto-detected from secret fields)
+- **Node auto-discovery** — automatically selects an available cluster node if `proxmox_node` is not configured
+- **VM tags** — configurable tags applied to provisioned VMs for filtering and organization
+- **PCI passthrough** — optional PCI express device configuration (GPU, etc.) on provisioned VMs
 - **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
 ## Project Structure
@@ -91,9 +96,16 @@ kubectl apply -f kubernetes/configmap.yaml
 kubectl apply -f kubernetes/rbac/
 
 # Create the secrets for Proxmox API access
+# Option A: API token auth (recommended)
 kubectl create secret generic autoscaler-secrets \
   --from-literal=proxmox_api_token_id="autoscaler@pve!autoscaler=YOUR_TOKEN_ID" \
   --from-literal=proxmox_api_token_secret="YOUR_TOKEN_SECRET" \
+  -n autoscaler-system
+
+# Option B: Username/password auth
+kubectl create secret generic autoscaler-secrets \
+  --from-literal=proxmox_username="root@pam" \
+  --from-literal=proxmox_password="YOUR_PASSWORD" \
   -n autoscaler-system
 
 # Deploy the autoscaler
@@ -117,17 +129,20 @@ data:
   cluster_name: "talos"          # Talos cluster name
   min_workers: "1"               # Minimum worker nodes
   max_workers: "20"              # Maximum worker nodes
-  vcpu: "4"                      # CPUs per worker VM
-  memory_gib: "8"                # RAM per worker VM (GiB)
+  min_cpu: "2"                   # Minimum CPUs per worker VM
+  max_cpu: "8"                   # Maximum CPUs per worker VM
+  min_memory_gib: "4"            # Minimum RAM per worker VM (GiB)
+  max_memory_gib: "16"           # Maximum RAM per worker VM (GiB)
   disk_gib: "100"                # Disk per worker VM (GiB)
   storage_pool: "local-lvm"      # Proxmox storage for VM disks
   network_bridge: "vmbr0"        # Proxmox bridge for VM NICs
   proxmox_api_url: "https://pve.example.com:8006"  # Proxmox API endpoint
-  proxmox_node: "pve"            # Proxmox node to create VMs on
   base_vmid: "2000"              # Starting VMID for new workers
+  tags: "autoscaler,worker"      # Tags applied to provisioned VMs
+  pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'  # Optional PCI passthrough
 ```
 
-Optional fields: `mac_address`, `serial`, `proxmox_insecure`. See the full `kubernetes/configmap.yaml` for all keys.
+Optional fields: `mac_address`, `serial`, `proxmox_insecure`, `proxmox_node` (auto-discovers if omitted). See the full `kubernetes/configmap.yaml` for all keys.
 
 ### Verify
 

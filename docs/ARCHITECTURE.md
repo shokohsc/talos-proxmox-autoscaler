@@ -53,11 +53,11 @@ The core control loop runs inside the Kubernetes cluster as a standard Go binary
 1. Read config from `autoscaler-config` ConfigMap
 2. List pods with `status.conditions` containing `PodScheduled=False, reason=Unschedulable`
 3. Aggregate CPU and memory requests of all unschedulable pods
-4. Calculate how many workers are needed based on VM specs from ConfigMap (vcpu, memory_gib)
+4. Calculate how many workers are needed and their optimal size (within min/max CPU/memory ranges)
 5. Create that many VMs (up to `max_workers`), if current count is insufficient
 6. Wait for nodes to register in the Kubernetes API
 
-**Resource-aware sizing:** The controller does not just count pods — it sums their CPU and memory requests and divides by the VM capacity (vcpu, memory_gib from ConfigMap) to determine exactly how many new workers are needed.
+**Dynamic VM sizing:** The controller sums pending pod CPU/memory requests and computes optimal VM sizes within configurable min/max bounds. Instead of a single fixed VM type, it creates VMs sized to fit the actual workload.
 
 **Key files:**
 ```
@@ -67,27 +67,32 @@ autoscaler/pkg/autoscaler/controller.go  # Config struct, Reconciler struct
 
 ### 2. Proxmox REST API Client
 
-Direct HTTP client that manages VM lifecycle on Proxmox using API token authentication.
+Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentication methods, auto-detected from mounted secret fields:
+
+- **API Token**: `Authorization: PVEAPIToken=USER@REALM!TOKENID=SECRET` header
+- **Username/Password**: Login via `/access/ticket` endpoint, caches ticket and CSRF token
 
 ```
-┌─────────────────────────────────────────────┐
-│           Proxmox REST API Client           │
-├─────────────────────────────────────────────┤
-│                                             │
-│  Auth: PVEAPIToken=USER@REALM!TOKENID=SECRET│
-│  Base: https://<proxmox_api_url>/api2/json  │
-│                                             │
-│  Functions:                                 │
-│  ├── CreateVM (clone or from scratch)       │
-│  ├── DeleteVM                               │
-│  ├── StopVM                                 │
-│  ├── GetVMStatus                            │
-│  └── FindVMByName                           │
-│                                             │
-│  VM Naming: {cluster}-worker-{index}        │
-│  VMID Scheme: BASE_VMID + index             │
-│                                             │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│           Proxmox REST API Client                       │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  Auth: API Token or Username/Password (auto-detected)   │
+│  Base: https://<proxmox_api_url>/api2/json              │
+│                                                         │
+│  Functions:                                             │
+│  ├── CreateVM (clone or from scratch)                   │
+│  ├── DeleteVM                                           │
+│  ├── StopVM                                             │
+│  ├── GetVMStatus                                        │
+│  ├── FindVMByName                                       │
+│  ├── ListNodes (cluster node discovery)                 │
+│  └── GetNode (configured or auto-discovered)            │
+│                                                         │
+│  VM Naming: {cluster}-worker-{index}                    │
+│  VMID Scheme: BASE_VMID + index                         │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
 ```
 
 **VM Provisioning Flow:**
@@ -149,25 +154,50 @@ Proxmox Cluster (3 nodes)
 ## Go Types
 
 ```go
+// AuthType distinguishes between password and token authentication
+type AuthType int
+
+const (
+    AuthPassword AuthType = iota
+    AuthToken
+)
+
 // Config holds all configuration read from the autoscaler-config ConfigMap
 type Config struct {
-    ClusterName  string
-    MinWorkers   int
-    MaxWorkers   int
-    Vcpu         int
-    MemoryGiB    int
-    DiskGiB      int
-    StoragePool  string
+    ClusterName   string
+    MinWorkers    int32
+    MaxWorkers    int32
+    MinCPU        int       // Minimum CPUs per worker VM
+    MaxCPU        int       // Maximum CPUs per worker VM
+    MinMemoryGiB  int       // Minimum RAM per worker VM (GiB)
+    MaxMemoryGiB  int       // Maximum RAM per worker VM (GiB)
+    DiskGiB       int32
+    StoragePool   string
     NetworkBridge string
-    MacAddress   string
-    Serial       string
+    MACAddress    string
+    Serial        string
+    Tags          string          // Tags applied to provisioned VMs
+    PCIDevices   []proxmox.PCIDevice  // PCI passthrough devices
+}
+
+// VMSize represents the computed size for a batch of new VMs
+type VMSize struct {
+    CPU       int
+    MemoryGiB int
+}
+
+// PCIDevice represents a PCI passthrough device configuration
+type PCIDevice struct {
+    ID   string `json:"id"`
+    PCIe bool   `json:"pcie"`
+    GPU  bool   `json:"gpu"`
 }
 
 // Reconciler runs the 30s timer loop, reads Config, and manages VMs via Proxmox API
 type Reconciler struct {
-    Client    kubernetes.Interface
-    Proxmox   *proxmox.Client
-    Config    *Config
+    Proxmox    *proxmox.Client
+    KubeClient kubernetes.Interface
+    BaseVMID   int
 }
 ```
 
@@ -188,7 +218,7 @@ type Reconciler struct {
 4. Controller reads VM specs from autoscaler-config ConfigMap
          │
          ▼
-5. Controller calculates how many workers are needed (resource-aware sizing)
+5. Controller calculates how many workers are needed and their optimal size (within min/max bounds)
          │
          ▼
 6. Controller calls Proxmox API to create new VM(s)
