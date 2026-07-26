@@ -43,6 +43,7 @@ type Config struct {
 	MACAddress    string
 	Serial        string
 	Tags          string
+	VLANID        int
 	PCIDevices   []proxmox.PCIDevice
 }
 
@@ -134,6 +135,7 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		MACAddress:    d["mac_address"],
 		Serial:        d["serial"],
 		Tags:          d["tags"],
+		VLANID:        atoiDefault(d["vlan_id"], 0),
 	}
 
 	if d["pci_devices"] != "" {
@@ -251,6 +253,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			MACAddress:    cfg.MACAddress,
 			Serial:        cfg.Serial,
 			Tags:          cfg.Tags,
+			VLANID:        cfg.VLANID,
 			PCIDevices:    cfg.PCIDevices,
 		})
 		if err != nil {

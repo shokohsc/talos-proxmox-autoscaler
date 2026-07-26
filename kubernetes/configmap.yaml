@@ -23,4 +23,5 @@ data:
   proxmox_insecure: "true"
   base_vmid: "2000"
   tags: "autoscaler,worker"
+  vlan_id: "0"
   pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'

@@ -53,6 +53,7 @@ type VMConfig struct {
 	Serial        string
 	TemplateID    int
 	Tags          string
+	VLANID        int
 	PCIDevices   []PCIDevice
 }
 
@@ -220,6 +221,10 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", config.MACAddress, config.NetworkBridge))
 	params.Set("boot", "order=scsi0;net0")
 
+	if config.VLANID > 0 {
+		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s,tag=%d", config.MACAddress, config.NetworkBridge, config.VLANID))
+	}
+
 	if config.DiskGiB > 0 {
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
@@ -274,7 +279,11 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
 	if config.MACAddress != "" {
-		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", config.MACAddress, config.NetworkBridge))
+		net0 := fmt.Sprintf("virtio=%s,bridge=%s", config.MACAddress, config.NetworkBridge)
+		if config.VLANID > 0 {
+			net0 += fmt.Sprintf(",tag=%d", config.VLANID)
+		}
+		params.Set("net0", net0)
 	}
 	if config.Serial != "" {
 		params.Set("serial0", fmt.Sprintf("socket=%s", config.Serial))
