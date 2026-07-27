@@ -42,6 +42,7 @@ type Config struct {
 	NetworkBridge string
 	MACAddress    string
 	Serial        string
+	CPUType       string
 	Tags          string
 	VLANID        int
 	PCIDevices   []proxmox.PCIDevice
@@ -144,6 +145,7 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		NetworkBridge: d["network_bridge"],
 		MACAddress:    d["mac_address"],
 		Serial:        d["serial"],
+		CPUType:       d["cpu_type"],
 		Tags:          d["tags"],
 		VLANID:        atoiDefault(d["vlan_id"], 0),
 	}
@@ -262,6 +264,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			NetworkBridge: cfg.NetworkBridge,
 			MACAddress:    cfg.MACAddress,
 			Serial:        cfg.Serial,
+			CPUType:       cfg.CPUType,
 			Tags:          cfg.Tags,
 			VLANID:        cfg.VLANID,
 			PCIDevices:    cfg.PCIDevices,

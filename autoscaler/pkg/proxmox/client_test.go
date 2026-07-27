@@ -510,7 +510,8 @@ func TestCreateVMFromScratch_Serial(t *testing.T) {
 	})
 	assert.NoError(t, err)
 	assert.Contains(t, gotQuery, "smbios1")
-	assert.Contains(t, gotQuery, "serial%3DABC123")
+	assert.Contains(t, gotQuery, "serial%3DQUJDMTIz") // base64 of "ABC123"
+	assert.Contains(t, gotQuery, "base64%3D1")
 }
 
 func TestCreateVMFromScratch_SerialHyphenStripped(t *testing.T) {
@@ -534,7 +535,56 @@ func TestCreateVMFromScratch_SerialHyphenStripped(t *testing.T) {
 		Serial:        "worker-vm",
 	})
 	assert.NoError(t, err)
-	assert.Contains(t, gotQuery, "serial%3Dworkervm") // hyphen stripped
+	assert.Contains(t, gotQuery, "smbios1")
+	assert.Contains(t, gotQuery, "serial%3Dd29ya2VyLXZt") // base64 of "worker-vm"
+	assert.Contains(t, gotQuery, "base64%3D1")
+}
+
+func TestCreateVMFromScratch_DefaultCPUType(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "cputype=host") // default
+}
+
+func TestCreateVMFromScratch_CustomCPUType(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		CPUType:       "kvm64",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "cputype=kvm64")
 }
 
 func TestStartVM(t *testing.T) {

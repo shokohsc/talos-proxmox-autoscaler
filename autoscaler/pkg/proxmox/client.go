@@ -5,6 +5,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +14,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -53,6 +53,7 @@ type VMConfig struct {
 	NetworkBridge string
 	MACAddress    string
 	Serial        string
+	CPUType       string
 	TemplateID    int
 	Tags          string
 	VLANID        int
@@ -230,6 +231,12 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", mac, config.NetworkBridge))
 	params.Set("boot", "order=scsi0;net0")
 
+	cpuType := config.CPUType
+	if cpuType == "" {
+		cpuType = "host"
+	}
+	params.Set("cputype", cpuType)
+
 	if config.VLANID > 0 {
 		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s,tag=%d", mac, config.NetworkBridge, config.VLANID))
 	}
@@ -238,7 +245,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
 	if config.Serial != "" {
-		params.Set("smbios1", fmt.Sprintf("serial=%s", sanitizeSerial(config.Serial)))
+		params.Set("smbios1", fmt.Sprintf("serial=%s,base64=1", base64.StdEncoding.EncodeToString([]byte(config.Serial))))
 	}
 	if config.Tags != "" {
 		params.Set("tags", config.Tags)
@@ -295,7 +302,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("net0", net0)
 	}
 	if config.Serial != "" {
-		params.Set("smbios1", fmt.Sprintf("serial=%s", sanitizeSerial(config.Serial)))
+		params.Set("smbios1", fmt.Sprintf("serial=%s,base64=1", base64.StdEncoding.EncodeToString([]byte(config.Serial))))
 	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
@@ -484,13 +491,4 @@ func randomMAC() string {
 	b := make([]byte, 4)
 	_, _ = crand.Read(b)
 	return fmt.Sprintf("52:54:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3])
-}
-
-func sanitizeSerial(s string) string {
-	return strings.Map(func(r rune) rune {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			return r
-		}
-		return -1
-	}, s)
 }
