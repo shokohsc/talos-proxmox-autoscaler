@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -237,7 +238,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 		params.Set("scsi0", fmt.Sprintf("%s:%d,iothread=1", config.StoragePool, config.DiskGiB))
 	}
 	if config.Serial != "" {
-		params.Set("smbios1", fmt.Sprintf("serial=%s", config.Serial))
+		params.Set("smbios1", fmt.Sprintf("serial=%s", sanitizeSerial(config.Serial)))
 	}
 	if config.Tags != "" {
 		params.Set("tags", config.Tags)
@@ -294,7 +295,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("net0", net0)
 	}
 	if config.Serial != "" {
-		params.Set("smbios1", fmt.Sprintf("serial=%s", config.Serial))
+		params.Set("smbios1", fmt.Sprintf("serial=%s", sanitizeSerial(config.Serial)))
 	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
@@ -480,7 +481,16 @@ func (c *Client) ResolveNode(ctx context.Context) error {
 }
 
 func randomMAC() string {
-	b := make([]byte, 3)
+	b := make([]byte, 4)
 	_, _ = crand.Read(b)
-	return fmt.Sprintf("52:54:%02x:%02x:%02x", b[0], b[1], b[2])
+	return fmt.Sprintf("52:54:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3])
+}
+
+func sanitizeSerial(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, s)
 }

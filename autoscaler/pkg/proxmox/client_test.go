@@ -513,6 +513,30 @@ func TestCreateVMFromScratch_Serial(t *testing.T) {
 	assert.Contains(t, gotQuery, "serial%3DABC123")
 }
 
+func TestCreateVMFromScratch_SerialHyphenStripped(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	assert.NoError(t, err)
+
+	err = c.createVMFromScratch(context.Background(), VMConfig{
+		Name:          "test-vm",
+		VMID:          100,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		Serial:        "worker-vm",
+	})
+	assert.NoError(t, err)
+	assert.Contains(t, gotQuery, "serial%3Dworkervm") // hyphen stripped
+}
+
 func TestStartVM(t *testing.T) {
 	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
