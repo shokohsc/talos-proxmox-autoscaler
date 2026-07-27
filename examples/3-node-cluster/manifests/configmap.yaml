@@ -18,3 +18,5 @@ data:
   proxmox_node: "pve"
   proxmox_insecure: "true"
   base_vmid: "2000"
+  worker_nodes: '[{"name":"worker-vm"}]'
+  worker_gpu_nodes: '[{"type":"p4","nodes":["worker-vm-gpu"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]}]'

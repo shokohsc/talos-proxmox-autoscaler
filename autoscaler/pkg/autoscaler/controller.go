@@ -29,6 +29,16 @@ type VMSize struct {
 	MemoryGiB int
 }
 
+type WorkerNodeConfig struct {
+	Name string `json:"name"`
+}
+
+type GPUNodeConfig struct {
+	Type       string              `json:"type"`
+	Nodes      []string            `json:"nodes"`
+	PCIDevices []proxmox.PCIDevice `json:"pci_devices"`
+}
+
 type Config struct {
 	ClusterName   string
 	MinWorkers    int32
@@ -45,14 +55,22 @@ type Config struct {
 	CPUType       string
 	Tags          string
 	VLANID        int
-	PCIDevices   []proxmox.PCIDevice
+	PCIDevices    []proxmox.PCIDevice
+
+	WorkerNodes []WorkerNodeConfig
+	GPUNodes    []GPUNodeConfig
+	// GPUMapping caches PCI devices by type for quick lookup
+	GPUMapping map[string][]proxmox.PCIDevice
 }
 
 type Reconciler struct {
-	Proxmox    *proxmox.Client
-	KubeClient kubernetes.Interface
-	Namespace  string
-	BaseVMID   int
+	Proxmox      *proxmox.Client
+	KubeClient   kubernetes.Interface
+	Namespace    string
+	BaseVMID     int
+	BaseGPUVMID  int
+	WorkerPrefix string // e.g. "worker-vm"
+	GPUPrefix    string // e.g. "worker-vm-gpu"
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -90,26 +108,50 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	for _, node := range evicted {
 		klog.Info("Removing descheduler-evicted node", "node", node.Name)
-		r.drainAndDelete(ctx, node.Name, cfg.ClusterName)
+		// Detect type from name prefix to get correct base VMID
+		if strings.HasPrefix(node.Name, cfg.ClusterName+"-"+r.GPUPrefix+"-") {
+			r.drainAndDelete(ctx, node.Name, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
+		} else {
+			r.drainAndDelete(ctx, node.Name, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID)
+		}
 	}
 
-	pendingCPU, pendingMem, unschedulableCount, err := r.aggregatePending(ctx)
+	pendingCPU, pendingMem, pendingGPU, unschedulableCount, err := r.aggregatePending(ctx)
 	if err != nil {
 		return err
 	}
-	klog.V(2).Info("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "count", unschedulableCount)
+	klog.V(2).Info("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "gpu", pendingGPU, "count", unschedulableCount)
 
-	currentWorkers := r.countWorkers(ctx, cfg.ClusterName)
+	currentWorkers := r.countWorkers(ctx, cfg.ClusterName, r.WorkerPrefix)
+	currentGPUWorkers := r.countWorkers(ctx, cfg.ClusterName, r.GPUPrefix)
+
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
+	
+	gpuWorkersNeeded := int32(0)
+	if pendingGPU > 0 {
+		gpuWorkersNeeded = int32(pendingGPU)
+		// GPU workers use max resources by default
+		gpuVMSize := VMSize{CPU: cfg.MaxCPU, MemoryGiB: cfg.MaxMemoryGiB}
+		klog.V(2).Info("GPU Scale decision", "current", currentGPUWorkers, "needed", gpuWorkersNeeded, "vm_size", gpuVMSize)
+		
+		if gpuWorkersNeeded > currentGPUWorkers {
+			klog.Info("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
+			r.scaleUp(ctx, currentGPUWorkers, gpuWorkersNeeded, gpuVMSize, cfg, "gpu")
+		} else if gpuWorkersNeeded < currentGPUWorkers && unschedulableCount == 0 {
+			klog.Info("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
+			r.scaleDown(ctx, currentGPUWorkers, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
+		}
+	}
+
 	klog.V(2).Info("Scale decision", "current", currentWorkers, "needed", workersNeeded, "vm_size", vmSize)
 
 	if workersNeeded > currentWorkers {
 		klog.Info("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
-		r.scaleUp(ctx, currentWorkers, workersNeeded, vmSize, cfg)
+		r.scaleUp(ctx, currentWorkers, workersNeeded, vmSize, cfg, "vm")
 	} else if workersNeeded < currentWorkers && unschedulableCount == 0 {
 		klog.Info("Scaling down", "current", currentWorkers, "desired", workersNeeded)
-		r.scaleDown(ctx, currentWorkers, workersNeeded, cfg.ClusterName)
+		r.scaleDown(ctx, currentWorkers, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID)
 	}
 
 	return nil
@@ -148,9 +190,34 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		CPUType:       d["cpu_type"],
 		Tags:          d["tags"],
 		VLANID:        atoiDefault(d["vlan_id"], 0),
+		GPUMapping:    make(map[string][]proxmox.PCIDevice),
 	}
 
-	if d["pci_devices"] != "" {
+	// ponytail: backward-compat: if new keys missing, populate from legacy
+	if d["worker_nodes"] == "" && config.ClusterName != "" {
+		config.WorkerNodes = []WorkerNodeConfig{{Name: config.ClusterName + "-worker"}}
+	}
+	if d["worker_gpu_nodes"] == "" && d["pci_devices"] != "" {
+		config.GPUNodes = []GPUNodeConfig{{
+			Type:  "default",
+			Nodes: []string{config.ClusterName + "-worker-gpu"},
+		}}
+		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.GPUNodes[0].PCIDevices); err != nil {
+			return nil, fmt.Errorf("parse pci_devices: %w", err)
+		}
+	} else if d["worker_gpu_nodes"] != "" {
+		if err := json.Unmarshal([]byte(d["worker_gpu_nodes"]), &config.GPUNodes); err != nil {
+			return nil, fmt.Errorf("parse worker_gpu_nodes: %w", err)
+		}
+	}
+
+	// Populate GPUMapping for quick lookup by type
+	for _, gpu := range config.GPUNodes {
+		config.GPUMapping[gpu.Type] = gpu.PCIDevices
+	}
+
+	// Legacy single PCI devices list (used if no GPU nodes defined)
+	if d["pci_devices"] != "" && len(config.GPUNodes) == 0 {
 		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.PCIDevices); err != nil {
 			return nil, fmt.Errorf("parse pci_devices: %w", err)
 		}
@@ -159,14 +226,15 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 	return config, nil
 }
 
-func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, resource.Quantity, int, error) {
+func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, resource.Quantity, int, int, error) {
 	podList, err := r.KubeClient.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return resource.Quantity{}, resource.Quantity{}, 0, err
+		return resource.Quantity{}, resource.Quantity{}, 0, 0, err
 	}
 
 	var totalCPU, totalMem resource.Quantity
 	count := 0
+	gpuCount := 0
 	for _, pod := range podList.Items {
 		if pod.Status.Phase != corev1.PodPending {
 			continue
@@ -181,12 +249,16 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 					if mem := c.Resources.Requests.Memory(); mem != nil {
 						totalMem.Add(*mem)
 					}
+					if gpu := c.Resources.Requests.Name("nvidia.com/gpu", resource.DecimalSI); gpu != nil {
+						gpuVal, _ := gpu.AsInt64()
+						gpuCount += int(gpuVal)
+					}
 				}
 				break
 			}
 		}
 	}
-	return totalCPU, totalMem, count, nil
+	return totalCPU, totalMem, gpuCount, count, nil
 }
 
 func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, pendingPods int, cfg *Config) (int32, VMSize) {
@@ -218,15 +290,15 @@ func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, p
 	return needed, size
 }
 
-func (r *Reconciler) countWorkers(ctx context.Context, clusterName string) int32 {
+func (r *Reconciler) countWorkers(ctx context.Context, clusterName, prefix string) int32 {
 	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return 0
 	}
 	count := int32(0)
-	prefix := clusterName + "-worker-"
+	fullPrefix := clusterName + "-" + prefix + "-"
 	for _, node := range nodeList.Items {
-		if strings.HasPrefix(node.Name, prefix) {
+		if strings.HasPrefix(node.Name, fullPrefix) {
 			count++
 		}
 	}
@@ -239,20 +311,46 @@ func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string)
 		return nil, err
 	}
 	var evictable []corev1.Node
-	prefix := clusterName + "-worker-"
+	// Check both standard and GPU worker prefixes
+	prefixes := []string{r.WorkerPrefix, r.GPUPrefix}
 	for _, node := range nodeList.Items {
-		if strings.HasPrefix(node.Name, prefix) && labels.Set(node.Labels).Has(deschedulerLabel) {
-			evictable = append(evictable, node)
+		for _, prefix := range prefixes {
+			fullPrefix := clusterName + "-" + prefix + "-"
+			if strings.HasPrefix(node.Name, fullPrefix) && labels.Set(node.Labels).Has(deschedulerLabel) {
+				evictable = append(evictable, node)
+				break
+			}
 		}
 	}
 	return evictable, nil
 }
 
-func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size VMSize, cfg *Config) {
+func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size VMSize, cfg *Config, workerType string) {
+	prefix := r.WorkerPrefix
+	baseVMID := r.BaseVMID
+	if workerType == "gpu" {
+		prefix = r.GPUPrefix
+		baseVMID = r.BaseGPUVMID
+	}
+
 	for i := current; i < desired; i++ {
-		vmid := r.BaseVMID + int(i)
-		vmName := fmt.Sprintf("%s-worker-%d", cfg.ClusterName, i)
-		klog.Info("Creating worker VM", "name", vmName, "vmid", vmid)
+		vmid := baseVMID + int(i)
+		vmName := fmt.Sprintf("%s-%s-%d", cfg.ClusterName, prefix, i)
+		klog.Info("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
+
+		var pciDevices []proxmox.PCIDevice
+		if workerType == "gpu" {
+			// Find a suitable GPU node with matching PCI devices
+			// Currently uses the first available GPU config
+			for _, gpuNode := range cfg.GPUNodes {
+				if len(gpuNode.PCIDevices) > 0 {
+					pciDevices = gpuNode.PCIDevices
+					break
+				}
+			}
+		} else {
+			pciDevices = cfg.PCIDevices
+		}
 
 		ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 			Name:          vmName,
@@ -267,7 +365,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			CPUType:       cfg.CPUType,
 			Tags:          cfg.Tags,
 			VLANID:        cfg.VLANID,
-			PCIDevices:    cfg.PCIDevices,
+			PCIDevices:    pciDevices,
 		})
 		if err != nil {
 			klog.Error(err, "Failed to create VM", "vmid", vmid)
@@ -279,19 +377,19 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 	}
 }
 
-func (r *Reconciler) scaleDown(ctx context.Context, current, desired int32, clusterName string) {
+func (r *Reconciler) scaleDown(ctx context.Context, current, desired int32, clusterName, prefix string, baseVMID int) {
 	for i := current; i > desired; i-- {
-		nodeName := fmt.Sprintf("%s-worker-%d", clusterName, i-1)
+		nodeName := fmt.Sprintf("%s-%s-%d", clusterName, prefix, i-1)
 		klog.Info("Removing worker node", "node", nodeName)
-		r.drainAndDelete(ctx, nodeName, clusterName)
+		r.drainAndDelete(ctx, nodeName, clusterName, prefix, baseVMID)
 	}
 }
 
-func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName string) {
+func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName, prefix string, baseVMID int) {
 	r.drainNode(ctx, nodeName)
 
-	// ponytail: use strings.Cut to parse "-worker-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
-	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-worker-")
+	// ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
+	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-"+prefix+"-")
 	if !ok {
 		klog.Error(fmt.Errorf("unexpected node name format: %s", nodeName), "Failed to parse VM index")
 		return
@@ -301,7 +399,7 @@ func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName s
 		klog.Error(err, "Failed to parse VM index", "node", nodeName)
 		return
 	}
-	vmid := r.BaseVMID + vmIndex
+	vmid := baseVMID + vmIndex
 	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 		klog.Error(err, "Failed to delete VM", "vmid", vmid)
 	}

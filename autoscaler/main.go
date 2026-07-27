@@ -40,6 +40,12 @@ func main() {
 	if baseVMID == 0 {
 		baseVMID = 2000
 	}
+	baseGPUVMID, _ := strconv.Atoi(getEnv("BASE_GPU_VMID", "3000"))
+	if baseGPUVMID == 0 {
+		baseGPUVMID = 3000
+	}
+	workerPrefix := getEnv("WORKER_PREFIX", "worker-vm")
+	gpuPrefix := getEnv("GPU_PREFIX", "worker-vm-gpu")
 
 	klog.V(1).Info("Proxmox configuration", "url", proxmoxURL, "node", proxmoxNode, "insecure", insecure)
 
@@ -61,10 +67,13 @@ func main() {
 	klog.V(1).Info("Controller configuration", "namespace", namespace, "base_vmid", baseVMID)
 
 	r := &autoscaler.Reconciler{
-		Proxmox:    proxmoxClient,
-		KubeClient: kubeClient,
-		Namespace:  namespace,
-		BaseVMID:   baseVMID,
+		Proxmox:      proxmoxClient,
+		KubeClient:   kubeClient,
+		Namespace:    namespace,
+		BaseVMID:     baseVMID,
+		BaseGPUVMID:  baseGPUVMID,
+		WorkerPrefix: workerPrefix,
+		GPUPrefix:    gpuPrefix,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

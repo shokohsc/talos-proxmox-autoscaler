@@ -187,17 +187,21 @@ func TestReadConfigPCIDevices(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
 		Data: map[string]string{
 			"cluster_name": "test",
-			"pci_devices":  `[{"id":"0000:01:00.0","pcie":true,"gpu":true}]`,
+			"worker_nodes": `[{"name":"worker-vm"}]`,
+			"worker_gpu_nodes": `[{"type":"p4","nodes":["worker-vm-gpu"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]}]`,
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system", WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
-	require.Len(t, cfg.PCIDevices, 1)
-	assert.Equal(t, "0000:01:00.0", cfg.PCIDevices[0].ID)
-	assert.True(t, cfg.PCIDevices[0].PCIe)
-	assert.True(t, cfg.PCIDevices[0].GPU)
+	require.Len(t, cfg.GPUNodes, 1)
+	require.Len(t, cfg.GPUNodes[0].PCIDevices, 1)
+	assert.Equal(t, "0000:01:00.0", cfg.GPUNodes[0].PCIDevices[0].ID)
+	assert.True(t, cfg.GPUNodes[0].PCIDevices[0].PCIe)
+	assert.True(t, cfg.GPUNodes[0].PCIDevices[0].GPU)
+	assert.Equal(t, []string{"worker-vm-gpu"}, cfg.GPUNodes[0].Nodes)
+	assert.Equal(t, "p4", cfg.GPUNodes[0].Type)
 }
 
 func TestReadConfigPCIDevicesMalformed(t *testing.T) {
@@ -205,14 +209,14 @@ func TestReadConfigPCIDevicesMalformed(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
 		Data: map[string]string{
 			"cluster_name": "test",
-			"pci_devices":  `not valid json`,
+			"worker_gpu_nodes": `not valid json`,
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system", WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
 	_, err := r.readConfig(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pci_devices")
+	assert.Contains(t, err.Error(), "worker_gpu_nodes")
 }
 
 func TestReadConfigPCIDevicesEmpty(t *testing.T) {
@@ -220,13 +224,15 @@ func TestReadConfigPCIDevicesEmpty(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
 		Data: map[string]string{
 			"cluster_name": "test",
+			"worker_nodes": `[{"name":"worker-vm"}]`,
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system", WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Nil(t, cfg.PCIDevices)
+	assert.NotNil(t, cfg.WorkerNodes)
 }
 
 func TestReadConfigVLANID(t *testing.T) {
@@ -339,39 +345,45 @@ func TestAggregatePending(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(pendingUnschedulable, runningPod, pendingScheduled)}
-	cpu, mem, count, err := r.aggregatePending(context.Background())
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(pendingUnschedulable, runningPod, pendingScheduled), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	cpu, mem, gpu, count, err := r.aggregatePending(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, count) // only the unschedulable pod
+	assert.Equal(t, 0, gpu)
 	assert.Equal(t, "500m", cpu.String())
 	assert.Equal(t, "512Mi", mem.String())
 }
 
 func TestAggregatePending_NoPods(t *testing.T) {
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset()}
-	cpu, mem, count, err := r.aggregatePending(context.Background())
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	cpu, mem, gpu, count, err := r.aggregatePending(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
+	assert.Equal(t, 0, gpu)
 	assert.True(t, cpu.IsZero())
 	assert.True(t, mem.IsZero())
 }
 
 func TestCountWorkers(t *testing.T) {
 	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-gpu-0"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-control-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "other-worker-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "other-worker-vm-0"}},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes})}
-	count := r.countWorkers(context.Background(), "test-cluster")
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	count := r.countWorkers(context.Background(), "test-cluster", "worker-vm")
 	assert.Equal(t, int32(2), count)
+	
+	gpuCount := r.countWorkers(context.Background(), "test-cluster", "worker-vm-gpu")
+	assert.Equal(t, int32(1), gpuCount)
 }
 
 func TestCountWorkers_None(t *testing.T) {
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{})}
-	count := r.countWorkers(context.Background(), "test-cluster")
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	count := r.countWorkers(context.Background(), "test-cluster", "worker-vm")
 	assert.Equal(t, int32(0), count)
 }
 
@@ -379,7 +391,7 @@ func TestFindEvictableNodes(t *testing.T) {
 	nodes := []corev1.Node{
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-cluster-worker-0",
+				Name: "test-cluster-worker-vm-0",
 				Labels: map[string]string{
 					deschedulerLabel: "true",
 				},
@@ -387,13 +399,13 @@ func TestFindEvictableNodes(t *testing.T) {
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:   "test-cluster-worker-1",
+				Name:   "test-cluster-worker-vm-1",
 				Labels: map[string]string{},
 			},
 		},
 		{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: "test-cluster-worker-2",
+				Name: "test-cluster-worker-vm-gpu-0",
 				Labels: map[string]string{
 					deschedulerLabel: "true",
 				},
@@ -401,20 +413,20 @@ func TestFindEvictableNodes(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes})}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
 	evictable, err := r.findEvictableNodes(context.Background(), "test-cluster")
 	require.NoError(t, err)
 	assert.Len(t, evictable, 2)
-	assert.Equal(t, "test-cluster-worker-0", evictable[0].Name)
-	assert.Equal(t, "test-cluster-worker-2", evictable[1].Name)
+	assert.Equal(t, "test-cluster-worker-vm-0", evictable[0].Name)
+	assert.Equal(t, "test-cluster-worker-vm-gpu-0", evictable[1].Name)
 }
 
 func TestFindEvictableNodes_None(t *testing.T) {
 	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-0", Labels: map[string]string{}}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0", Labels: map[string]string{}}},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes})}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
 	evictable, err := r.findEvictableNodes(context.Background(), "test-cluster")
 	require.NoError(t, err)
 	assert.Empty(t, evictable)
@@ -461,7 +473,7 @@ func TestDrainAndDelete(t *testing.T) {
 	defer srv.Close()
 
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-0"},
+		ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0"},
 	}
 	kubeClient := fake.NewSimpleClientset(node)
 
@@ -469,18 +481,20 @@ func TestDrainAndDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	r := &Reconciler{
-		KubeClient: kubeClient,
-		Proxmox:    proxmoxClient,
-		BaseVMID:   1000,
-		Namespace:  "autoscaler-system",
+		KubeClient:   fake.NewSimpleClientset(cm, &corev1.NodeList{Items: nodes}),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
 	}
 
-	r.drainAndDelete(context.Background(), "test-cluster-worker-0", "test-cluster")
+	r.drainAndDelete(context.Background(), "test-cluster-worker-vm-0", "test-cluster", "worker-vm", 1000)
 
 	// VM index 0 → VMID 1000 + 0 = 1000
 	assert.Equal(t, 1000, deletedVMID)
 	// Node should be cordoned
-	updatedNode, err := kubeClient.CoreV1().Nodes().Get(context.Background(), "test-cluster-worker-0", metav1.GetOptions{})
+	updatedNode, err := kubeClient.CoreV1().Nodes().Get(context.Background(), "test-cluster-worker-vm-0", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.True(t, updatedNode.Spec.Unschedulable)
 }
@@ -535,10 +549,12 @@ func TestScaleUp(t *testing.T) {
 	}
 
 	r := &Reconciler{
-		KubeClient: fake.NewSimpleClientset(readyNode),
-		Proxmox:    proxmoxClient,
-		BaseVMID:   1000,
-		Namespace:  "autoscaler-system",
+		KubeClient:   fake.NewSimpleClientset(cm, &corev1.NodeList{Items: nodes}),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
 	}
 
 	cfg := &Config{
@@ -552,7 +568,7 @@ func TestScaleUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r.scaleUp(ctx, 0, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg)
+	r.scaleUp(ctx, 0, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm")
 
 	require.Len(t, createdVMs, 3)
 	assert.Equal(t, 1000, createdVMs[0])
@@ -570,25 +586,27 @@ func TestScaleDown(t *testing.T) {
 
 	// Create nodes that will be drained
 	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-2"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-2"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0"}},
 	}
 
 	r := &Reconciler{
-		KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}),
-		Proxmox:    proxmoxClient,
-		BaseVMID:   1000,
-		Namespace:  "autoscaler-system",
+		KubeClient:   fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Scale from 3 to 1: should drain worker-2 and worker-1
-	r.scaleDown(ctx, 3, 1, "test-cluster")
+	// Scale from 3 to 1: should drain worker-vm-2 and worker-vm-1
+	r.scaleDown(ctx, 3, 1, "test-cluster", "worker-vm", 1000)
 
-	// VMID for worker-2: 1000 + 2 = 1002, worker-1: 1000 + 1 = 1001
+	// VMID for worker-vm-2: 1000 + 2 = 1002, worker-vm-1: 1000 + 1 = 1001
 	assert.Len(t, deletedVMIDs, 2)
 	assert.Contains(t, deletedVMIDs, 1002)
 	assert.Contains(t, deletedVMIDs, 1001)
@@ -649,6 +667,8 @@ func TestReconcile_ScaleUp(t *testing.T) {
 			"storage_pool":     "local-lvm",
 			"network_bridge":   "vmbr0",
 			"mac_address":      "AA:BB:CC:DD:EE:FF",
+			"worker_nodes":     `[{"name":"worker-vm"}]`,
+			"worker_gpu_nodes": `[{"type":"p4","nodes":["worker-vm-gpu"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]}]`,
 		},
 	}
 
@@ -723,10 +743,12 @@ func TestReconcile_ScaleUp(t *testing.T) {
 	}
 
 	r := &Reconciler{
-		KubeClient: fake.NewSimpleClientset(cm, pendingPod, readyNode),
-		Proxmox:    proxmoxClient,
-		BaseVMID:   1000,
-		Namespace:  "autoscaler-system",
+		KubeClient:   fake.NewSimpleClientset(cm, pendingPod, readyNode),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -751,14 +773,15 @@ func TestReconcile_ScaleDown(t *testing.T) {
 			"disk_gib":       "50",
 			"storage_pool":   "local-lvm",
 			"network_bridge": "vmbr0",
+			"worker_nodes":   `[{"name":"worker-vm"}]`,
 		},
 	}
 
 	// 3 worker nodes, no pending pods → should scale down to min_workers=1
 	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-2"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-2"}},
 	}
 
 	var deletedVMIDs []int
@@ -795,13 +818,14 @@ func TestReconcile_NoAction(t *testing.T) {
 			"max_cpu":        "4",
 			"min_memory_gib": "4",
 			"max_memory_gib": "8",
+			"worker_nodes":   `[{"name":"worker-vm"}]`,
 		},
 	}
 
 	// 2 workers, no pending pods → at min, no action needed
 	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
