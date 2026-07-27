@@ -283,7 +283,11 @@ func (r *Reconciler) countWorkers(ctx context.Context, clusterName, prefix strin
 	fullPrefix := clusterName + "-" + prefix + "-"
 	for _, node := range nodeList.Items {
 		if strings.HasPrefix(node.Name, fullPrefix) {
-			count++
+			// Ensure exact prefix match: next char must be digit (or end of string)
+			idx := len(fullPrefix)
+			if idx == len(node.Name) || (idx < len(node.Name) && node.Name[idx] >= '0' && node.Name[idx] <= '9') {
+				count++
+			}
 		}
 	}
 	return count
@@ -296,7 +300,10 @@ func (r *Reconciler) countInFlight(clusterName, prefix string) int32 {
 	fullPrefix := clusterName + "-" + prefix + "-"
 	for name := range r.InFlight {
 		if strings.HasPrefix(name, fullPrefix) {
-			count++
+			idx := len(fullPrefix)
+			if idx == len(name) || (idx < len(name) && name[idx] >= '0' && name[idx] <= '9') {
+				count++
+			}
 		}
 	}
 	return count
