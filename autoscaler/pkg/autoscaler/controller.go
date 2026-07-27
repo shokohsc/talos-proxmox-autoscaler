@@ -348,6 +348,15 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			klog.V(2).Info("VM already in-flight, skipping", "name", vmName)
 			continue
 		}
+		r.inFlightMu.Unlock()
+
+		// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
+		if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
+			klog.V(2).Info("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
+			continue
+		}
+
+		r.inFlightMu.Lock()
 		r.InFlight[vmName] = true
 		r.inFlightMu.Unlock()
 
@@ -370,6 +379,12 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 				delete(r.InFlight, vmName)
 				r.inFlightMu.Unlock()
 			}()
+
+			// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
+			if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
+				klog.V(2).Info("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
+				return
+			}
 
 			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 				Name:          vmName,
