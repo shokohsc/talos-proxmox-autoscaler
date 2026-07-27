@@ -235,7 +235,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	if cpuType == "" {
 		cpuType = "host"
 	}
-	params.Set("cputype", cpuType)
+	params.Set("cpu", cpuType)
 
 	if config.VLANID > 0 {
 		params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s,tag=%d", mac, config.NetworkBridge, config.VLANID))

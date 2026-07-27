@@ -560,7 +560,7 @@ func TestCreateVMFromScratch_DefaultCPUType(t *testing.T) {
 		NetworkBridge: "vmbr0",
 	})
 	assert.NoError(t, err)
-	assert.Contains(t, gotQuery, "cputype=host") // default
+	assert.Contains(t, gotQuery, "cpu=host") // default
 }
 
 func TestCreateVMFromScratch_CustomCPUType(t *testing.T) {
@@ -584,7 +584,7 @@ func TestCreateVMFromScratch_CustomCPUType(t *testing.T) {
 		CPUType:       "kvm64",
 	})
 	assert.NoError(t, err)
-	assert.Contains(t, gotQuery, "cputype=kvm64")
+	assert.Contains(t, gotQuery, "cpu=kvm64")
 }
 
 func TestStartVM(t *testing.T) {
