@@ -170,7 +170,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	klog.V(3).Info("Proxmox API call", "method", method, "url", req.URL.Path, "status", resp.StatusCode)
+	klog.V(2).Info("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

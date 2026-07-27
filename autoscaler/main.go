@@ -17,12 +17,14 @@ import (
 )
 
 func main() {
+	klog.InitFlags(nil)
 	flag.Parse()
 
 	logLevel := getEnv("LOG_LEVEL", "info")
 	verbosity := logLevelToVerbosity(logLevel)
-	klog.InitFlags(nil)
 	_ = flag.Set("v", strconv.Itoa(verbosity))
+	_ = flag.Set("logtostderr", "true")
+	_ = flag.Set("alsologtostderr", "true")
 	flag.Parse()
 
 	klog.Info("Starting talos-proxmox-autoscaler", "log_level", logLevel)
