@@ -207,13 +207,10 @@ data:
   # Optional: explicit MAC for PXE config lookup
   # mac_address: "52:54:00:AA:BB:CC"
   # serial: "worker-standard-001"
-  # cpu_type: "host"  # Proxmox VM CPU type (default: "host")
+  # cpu_type: "host"
 
   # Optional: tags applied to provisioned VMs
   tags: "autoscaler,worker"
-
-  # Optional: PCI passthrough devices (JSON array)
-  # pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'
 
   # Optional: VLAN tag for primary network interface
   vlan_id: "0"
@@ -222,6 +219,19 @@ data:
   cluster_name: "k8s"
   min_workers: "1"
   max_workers: "20"
+
+  # Worker types
+  base_vmid: "2000"
+  base_gpu_vmid: "3000"
+  worker_prefix: "worker-vm"
+  gpu_prefix: "worker-vm-gpu"
+
+  # Regular workers
+  worker_nodes: '[{"name":"worker-vm"}]'
+
+  # GPU workers (optional - only if you need GPU passthrough)
+  # Each entry defines a GPU type with PCI devices for passthrough
+  worker_gpu_nodes: '[{"type":"tesla-p4","nodes":["pve1","pve2"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]},{"type":"tesla-p40","nodes":["pve3"],"pci_devices":[{"id":"0000:41:00.0","pcie":true,"gpu":true}]}]'
 EOF
 ```
 
@@ -367,13 +377,15 @@ The autoscaler exposes Prometheus metrics on `:8080/metrics`:
 
 ```bash
 # Key metrics to watch
-autoscaler_nodes_total{class="standard"}       # Total workers by class
-autoscaler_scale_ups_total                     # Scale-up events
-autoscaler_scale_downs_total                   # Scale-down events (descheduler-triggered)
-autoscaler_provision_duration_seconds          # VM provisioning time
-autoscaler_drain_duration_seconds              # Node drain time
-autoscaler_pending_pods_count                  # Unscheduleable pods
-autoscaler_descheduler_evictions_total         # Nodes removed via descheduler label
+autoscaler_nodes_total{type="worker-vm"}         # Regular workers
+autoscaler_nodes_total{type="worker-vm-gpu"}     # GPU workers
+autoscaler_scale_ups_total                       # Scale-up events
+autoscaler_scale_downs_total                     # Scale-down events
+autoscaler_provision_duration_seconds            # VM provisioning time
+autoscaler_drain_duration_seconds                # Node drain time
+autoscaler_pending_pods_count                    # Unscheduleable pods
+autoscaler_pending_gpu_count                     # Pending GPU requests
+autoscaler_descheduler_evictions_total           # Nodes removed via descheduler label
 ```
 
 Example Prometheus alert rules:

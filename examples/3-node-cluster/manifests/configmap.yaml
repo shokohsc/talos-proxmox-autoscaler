@@ -18,5 +18,8 @@ data:
   proxmox_node: "pve"
   proxmox_insecure: "true"
   base_vmid: "2000"
+  base_gpu_vmid: "3000"
+  worker_prefix: "worker-vm"
+  gpu_prefix: "worker-vm-gpu"
   worker_nodes: '[{"name":"worker-vm"}]'
-  worker_gpu_nodes: '[{"type":"p4","nodes":["worker-vm-gpu"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]}]'
+  worker_gpu_nodes: '[{"type":"tesla-p4","nodes":["pve1","pve2"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]},{"type":"tesla-p40","nodes":["pve3"],"pci_devices":[{"id":"0000:41:00.0","pcie":true,"gpu":true}]}]'

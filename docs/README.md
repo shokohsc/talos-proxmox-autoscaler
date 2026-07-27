@@ -4,16 +4,14 @@ Autoscale Talos Linux Kubernetes **worker** nodes on a Proxmox VE cluster using 
 
 ## What This Does
 
-Watches your Kubernetes cluster for pods that can't be scheduled, provisions new Talos Linux VMs on Proxmox to handle them, and tears them down when demand drops. Supports four machine classes:
+Watches your Kubernetes cluster for pods that can't be scheduled, provisions new Talos Linux VMs on Proxmox to handle them, and tears them down when demand drops. Supports two worker types:
 
-| Class | vCPU | RAM | Use Case |
-|-------|------|-----|----------|
-| `tiny` | 2 | 4 GB | Lightweight workloads, sidecars |
-| `standard` | 4 | 8 GB | General workloads (default) |
-| `gpu` | 8 | 32 GB | GPU passthrough workloads |
-| `storage` | 4 | 16 GB | Persistent volume workloads |
+| Type | Prefix | Use Case |
+|------|--------|----------|
+| `worker-vm` | `worker-vm` | General workloads (CPU/memory based) |
+| `worker-vm-gpu` | `worker-vm-gpu` | GPU passthrough workloads (Nvidia) |
 
-Scale range: **1–20 workers** (configurable). Three control plane nodes run permanently and are **not managed by the autoscaler**.
+Scale range: **1–20 workers per type** (configurable). Three control plane nodes run permanently and are **not managed by the autoscaler**.
 
 ## Architecture (TL;DR)
 
@@ -121,8 +119,8 @@ VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-
 | Field | Description | Default |
 |-------|-------------|---------|
 | cluster_name | Name prefix for VMs | (required) |
-| min_workers | Minimum VM count | 1 |
-| max_workers | Maximum VM count | 10 |
+| min_workers | Minimum worker count | 1 |
+| max_workers | Maximum worker count | 10 |
 | min_cpu | Minimum CPU per VM | 2 |
 | max_cpu | Maximum CPU per VM | 8 |
 | min_memory_gib | Minimum memory per VM | 4 |
@@ -131,7 +129,12 @@ VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-
 | storage_pool | Proxmox storage pool | (required) |
 | network_bridge | Network bridge | (required) |
 | tags | Space-separated VM tags | (optional) |
-| pci_devices | JSON array of PCI devices | (optional) |
+| worker_nodes | JSON array of regular worker configs | (required) |
+| worker_gpu_nodes | JSON array of GPU worker configs with PCI devices | (optional) |
+| base_vmid | Starting VMID for regular workers | 2000 |
+| base_gpu_vmid | Starting VMID for GPU workers | 3000 |
+| worker_prefix | Prefix for regular worker VM names | worker-vm |
+| gpu_prefix | Prefix for GPU worker VM names | worker-vm-gpu |
 
 ### Secrets
 

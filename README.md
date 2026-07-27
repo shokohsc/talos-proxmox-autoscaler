@@ -29,6 +29,8 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 
 - **Dynamic VM sizing** — autoscaler chooses CPU/RAM for each batch of pending pods between configurable min/max ranges (optimal fit)
 - **Resource-aware scaling** — 30s timer loop aggregates pending pod CPU/memory requests, calculates exactly how many workers are needed
+- **Dual worker types** — independent scaling for regular workers (`worker-vm`) and GPU workers (`worker-vm-gpu`) with per-GPU-type PCI passthrough configs
+- **GPU scheduling** — pods requesting `nvidia.com/gpu` automatically trigger GPU worker provisioning
 - **Descheduler integration** — watches for nodes labeled `descheduler.kubernetes.io/node-probable-eviction`, then cordons, drains, and destroys them
 - **Workers-only** — 3 control planes run permanently, never managed by the autoscaler
 - **PXE boot** — boot order `scsi0;net0`, first boot PXE-fetches Talos kernel, installs to disk, subsequent boots from scsi0
@@ -36,7 +38,6 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 - **Dual auth** — supports both Proxmox API token and username/password authentication (auto-detected from secret fields)
 - **Node auto-discovery** — automatically selects an available cluster node if `proxmox_node` is not configured
 - **VM tags** — configurable tags applied to provisioned VMs for filtering and organization
-- **PCI passthrough** — optional PCI express device configuration (GPU, etc.) on provisioned VMs
 - **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
 ## Project Structure
@@ -127,8 +128,8 @@ metadata:
   namespace: autoscaler-system
 data:
   cluster_name: "talos"          # Talos cluster name
-  min_workers: "1"               # Minimum worker nodes
-  max_workers: "20"              # Maximum worker nodes
+  min_workers: "1"               # Minimum worker nodes per type
+  max_workers: "20"              # Maximum worker nodes per type
   min_cpu: "2"                   # Minimum CPUs per worker VM
   max_cpu: "8"                   # Maximum CPUs per worker VM
   min_memory_gib: "4"            # Minimum RAM per worker VM (GiB)
@@ -137,11 +138,17 @@ data:
   storage_pool: "local-lvm"      # Proxmox storage for VM disks
   network_bridge: "vmbr0"        # Proxmox bridge for VM NICs
   proxmox_api_url: "https://pve.example.com:8006"  # Proxmox API endpoint
-  base_vmid: "2000"              # Starting VMID for new workers
+  base_vmid: "2000"              # Starting VMID for regular workers
+  base_gpu_vmid: "3000"          # Starting VMID for GPU workers
   tags: "autoscaler,worker"      # Tags applied to provisioned VMs
   vlan_id: "0"                   # VLAN tag for primary interface (0 = no tag)
-  cpu_type: "host"                # VM CPU type (default: "host")
-  pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'  # Optional PCI passthrough
+  cpu_type: "host"               # VM CPU type (default: "host")
+
+  # Worker types
+  worker_prefix: "worker-vm"       # Prefix for regular worker VM names
+  gpu_prefix: "worker-vm-gpu"      # Prefix for GPU worker VM names
+  worker_nodes: '[{"name":"worker-vm"}]'
+  worker_gpu_nodes: '[{"type":"tesla-p4","nodes":["pve1","pve2"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]},{"type":"tesla-p40","nodes":["pve3"],"pci_devices":[{"id":"0000:41:00.0","pcie":true,"gpu":true}]}]'
 ```
 
 Optional fields: `mac_address`, `serial`, `cpu_type`, `proxmox_insecure`, `proxmox_node` (auto-discovers if omitted). See the full `kubernetes/configmap.yaml` for all keys.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -55,12 +56,9 @@ type Config struct {
 	CPUType       string
 	Tags          string
 	VLANID        int
-	PCIDevices    []proxmox.PCIDevice
 
 	WorkerNodes []WorkerNodeConfig
 	GPUNodes    []GPUNodeConfig
-	// GPUMapping caches PCI devices by type for quick lookup
-	GPUMapping map[string][]proxmox.PCIDevice
 }
 
 type Reconciler struct {
@@ -71,6 +69,11 @@ type Reconciler struct {
 	BaseGPUVMID  int
 	WorkerPrefix string // e.g. "worker-vm"
 	GPUPrefix    string // e.g. "worker-vm-gpu"
+
+	// ponytail: in-flight VMs tracked by name, prevents duplicate creation
+	// when reconcile fires before previous VMs join the cluster
+	InFlight   map[string]bool
+	inFlightMu sync.Mutex
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -125,6 +128,13 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	currentWorkers := r.countWorkers(ctx, cfg.ClusterName, r.WorkerPrefix)
 	currentGPUWorkers := r.countWorkers(ctx, cfg.ClusterName, r.GPUPrefix)
 
+	// Count in-flight VMs as current to prevent duplicate creation
+	// when reconcile fires before previous VMs join the cluster
+	inFlightRegular := r.countInFlight(cfg.ClusterName, r.WorkerPrefix)
+	inFlightGPU := r.countInFlight(cfg.ClusterName, r.GPUPrefix)
+	currentWorkers += inFlightRegular
+	currentGPUWorkers += inFlightGPU
+
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
 	
@@ -164,24 +174,14 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 	}
 	d := cm.Data
 
-	// ponytail: backward-compat fallbacks for pre-v0.3 ConfigMap keys
-	maxCPU := d["max_cpu"]
-	if maxCPU == "" {
-		maxCPU = d["vcpu"]
-	}
-	maxMem := d["max_memory_gib"]
-	if maxMem == "" {
-		maxMem = d["memory_gib"]
-	}
-
 	config := &Config{
 		ClusterName:   d["cluster_name"],
 		MinWorkers:    int32(clampInt(atoiDefault(d["min_workers"], 1), 0, 100)),
 		MaxWorkers:    int32(clampInt(atoiDefault(d["max_workers"], 10), 1, 100)),
 		MinCPU:        clampInt(atoiDefault(d["min_cpu"], 2), 1, 128),
-		MaxCPU:        clampInt(atoiDefault(maxCPU, 8), 1, 128),
+		MaxCPU:        clampInt(atoiDefault(d["max_cpu"], 8), 1, 128),
 		MinMemoryGiB:  clampInt(atoiDefault(d["min_memory_gib"], 4), 1, 1024),
-		MaxMemoryGiB:  clampInt(atoiDefault(maxMem, 16), 1, 1024),
+		MaxMemoryGiB:  clampInt(atoiDefault(d["max_memory_gib"], 16), 1, 1024),
 		DiskGiB:       int32(clampInt(atoiDefault(d["disk_gib"], 50), 10, 4096)),
 		StoragePool:   d["storage_pool"],
 		NetworkBridge: d["network_bridge"],
@@ -190,37 +190,21 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		CPUType:       d["cpu_type"],
 		Tags:          d["tags"],
 		VLANID:        atoiDefault(d["vlan_id"], 0),
-		GPUMapping:    make(map[string][]proxmox.PCIDevice),
 	}
 
-	// ponytail: backward-compat: if new keys missing, populate from legacy
-	if d["worker_nodes"] == "" && config.ClusterName != "" {
-		config.WorkerNodes = []WorkerNodeConfig{{Name: config.ClusterName + "-worker"}}
-	}
-	if d["worker_gpu_nodes"] == "" && d["pci_devices"] != "" {
-		config.GPUNodes = []GPUNodeConfig{{
-			Type:  "default",
-			Nodes: []string{config.ClusterName + "-worker-gpu"},
-		}}
-		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.GPUNodes[0].PCIDevices); err != nil {
-			return nil, fmt.Errorf("parse pci_devices: %w", err)
+	if d["worker_nodes"] != "" {
+		if err := json.Unmarshal([]byte(d["worker_nodes"]), &config.WorkerNodes); err != nil {
+			return nil, fmt.Errorf("parse worker_nodes: %w", err)
 		}
-	} else if d["worker_gpu_nodes"] != "" {
+	}
+	if d["worker_gpu_nodes"] != "" {
 		if err := json.Unmarshal([]byte(d["worker_gpu_nodes"]), &config.GPUNodes); err != nil {
 			return nil, fmt.Errorf("parse worker_gpu_nodes: %w", err)
 		}
 	}
 
-	// Populate GPUMapping for quick lookup by type
-	for _, gpu := range config.GPUNodes {
-		config.GPUMapping[gpu.Type] = gpu.PCIDevices
-	}
-
-	// Legacy single PCI devices list (used if no GPU nodes defined)
-	if d["pci_devices"] != "" && len(config.GPUNodes) == 0 {
-		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.PCIDevices); err != nil {
-			return nil, fmt.Errorf("parse pci_devices: %w", err)
-		}
+	if config.ClusterName == "" {
+		return nil, fmt.Errorf("cluster_name is required")
 	}
 
 	return config, nil
@@ -305,6 +289,19 @@ func (r *Reconciler) countWorkers(ctx context.Context, clusterName, prefix strin
 	return count
 }
 
+func (r *Reconciler) countInFlight(clusterName, prefix string) int32 {
+	r.inFlightMu.Lock()
+	defer r.inFlightMu.Unlock()
+	count := int32(0)
+	fullPrefix := clusterName + "-" + prefix + "-"
+	for name := range r.InFlight {
+		if strings.HasPrefix(name, fullPrefix) {
+			count++
+		}
+	}
+	return count
+}
+
 func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string) ([]corev1.Node, error) {
 	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -336,44 +333,60 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 	for i := current; i < desired; i++ {
 		vmid := baseVMID + int(i)
 		vmName := fmt.Sprintf("%s-%s-%d", cfg.ClusterName, prefix, i)
+
+		// Check if already in-flight (shouldn't happen with in-flight counting, but guard anyway)
+		r.inFlightMu.Lock()
+		if _, exists := r.InFlight[vmName]; exists {
+			r.inFlightMu.Unlock()
+			klog.V(2).Info("VM already in-flight, skipping", "name", vmName)
+			continue
+		}
+		r.InFlight[vmName] = true
+		r.inFlightMu.Unlock()
+
 		klog.Info("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
 
 		var pciDevices []proxmox.PCIDevice
 		if workerType == "gpu" {
-			// Find a suitable GPU node with matching PCI devices
-			// Currently uses the first available GPU config
 			for _, gpuNode := range cfg.GPUNodes {
 				if len(gpuNode.PCIDevices) > 0 {
 					pciDevices = gpuNode.PCIDevices
 					break
 				}
 			}
-		} else {
-			pciDevices = cfg.PCIDevices
 		}
 
-		ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
-			Name:          vmName,
-			VMID:          vmid,
-			VCPU:          int32(size.CPU),
-			MemoryMiB:     int32(size.MemoryGiB) * 1024,
-			DiskGiB:       cfg.DiskGiB,
-			StoragePool:   cfg.StoragePool,
-			NetworkBridge: cfg.NetworkBridge,
-			MACAddress:    cfg.MACAddress,
-			Serial:        cfg.Serial,
-			CPUType:       cfg.CPUType,
-			Tags:          cfg.Tags,
-			VLANID:        cfg.VLANID,
-			PCIDevices:    pciDevices,
-		})
-		if err != nil {
-			klog.Error(err, "Failed to create VM", "vmid", vmid)
-			continue
-		}
-		if err := r.waitForNodeReady(ctx, ip); err != nil {
-			klog.Error(err, "Node not ready after provisioning", "ip", ip)
-		}
+		// Non-blocking: create VM and wait for node in a goroutine
+		go func(vmName string, vmid int, pciDevices []proxmox.PCIDevice) {
+			defer func() {
+				r.inFlightMu.Lock()
+				delete(r.InFlight, vmName)
+				r.inFlightMu.Unlock()
+			}()
+
+			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
+				Name:          vmName,
+				VMID:          vmid,
+				VCPU:          int32(size.CPU),
+				MemoryMiB:     int32(size.MemoryGiB) * 1024,
+				DiskGiB:       cfg.DiskGiB,
+				StoragePool:   cfg.StoragePool,
+				NetworkBridge: cfg.NetworkBridge,
+				MACAddress:    cfg.MACAddress,
+				Serial:        cfg.Serial,
+				CPUType:       cfg.CPUType,
+				Tags:          cfg.Tags,
+				VLANID:        cfg.VLANID,
+				PCIDevices:    pciDevices,
+			})
+			if err != nil {
+				klog.Error(err, "Failed to create VM", "vmid", vmid)
+				return
+			}
+			if err := r.waitForNodeReady(ctx, ip); err != nil {
+				klog.Error(err, "Node not ready after provisioning", "ip", ip)
+			}
+		}(vmName, vmid, pciDevices)
 	}
 }
 

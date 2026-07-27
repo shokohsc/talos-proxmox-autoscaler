@@ -230,6 +230,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	params.Set("scsi0", fmt.Sprintf("%s:0,iothread=1", config.StoragePool))
 	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", mac, config.NetworkBridge))
 	params.Set("boot", "order=scsi0;net0")
+	params.Set("agent", "1")
 
 	cpuType := config.CPUType
 	if cpuType == "" {

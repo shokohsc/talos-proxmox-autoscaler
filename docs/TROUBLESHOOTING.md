@@ -264,7 +264,7 @@ curl -w "@curl-format.txt" -o /dev/null -s https://10.0.1.10:8006
 **Symptoms:**
 - GPU worker node joins cluster but GPU not available
 - `nvidia-smi` not found in node
-- Pods requesting GPU resource can't schedule
+- Pods requesting `nvidia.com/gpu` resource can't schedule
 
 **Diagnosis:**
 ```bash
@@ -272,10 +272,13 @@ curl -w "@curl-format.txt" -o /dev/null -s https://10.0.1.10:8006
 kubectl describe node <gpu-worker> | grep -A 10 "Allocatable"
 
 # Check PCI passthrough in Proxmox
-ssh root@10.0.1.12 "qm config 205 | grep hostpci"
+ssh root@10.0.1.12 "qm config <vmid> | grep hostpci"
 
 # Check IOMMU group
 ssh root@10.0.1.12 "dmesg | grep -i iommu"
+
+# Check ConfigMap has correct GPU worker config
+kubectl get configmap autoscaler-config -n autoscaler-system -o jsonpath='{.data.worker_gpu_nodes}' | jq .
 ```
 
 **Fix:**

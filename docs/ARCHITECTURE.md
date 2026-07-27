@@ -89,8 +89,10 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 │  ├── ListNodes (cluster node discovery)                 │
 │  └── GetNode (configured or auto-discovered)            │
 │                                                         │
-│  VM Naming: {cluster}-worker-{index}                    │
+│  VM Naming: {cluster}-{prefix}-{index}                    │
 │  VMID Scheme: BASE_VMID + index                         │
+│  Regular: cluster-worker-vm-{N}, VMID 2000+N              │
+│  GPU: cluster-worker-vm-gpu-{N}, VMID 3000+N              │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -136,16 +138,18 @@ The autoscaler communicates directly with the Proxmox VE REST API using a **dedi
 
 ```
 Proxmox Cluster (3 nodes)
-├── Node: pve-1
+├── Node: pve-1 (Tesla P4)
 │   ├── VM: cp-0 (control plane, permanent, NOT managed by autoscaler)
+│   ├── VM: worker-vm-0 (autoscaled, regular)
+│   └── VM: worker-vm-gpu-0 (autoscaled, GPU)
+├── Node: pve-2 (Tesla P4)
 │   ├── VM: cp-1 (control plane, permanent, NOT managed by autoscaler)
-│   └── VM: cp-2 (control plane, permanent, NOT managed by autoscaler)
-├── Node: pve-2
-│   ├── VM: worker-0 (autoscaled)
-│   └── VM: worker-3 (autoscaled)
-└── Node: pve-3
-    ├── VM: worker-1 (autoscaled)
-    └── VM: worker-2 (autoscaled)
+│   ├── VM: worker-vm-1 (autoscaled, regular)
+│   └── VM: worker-vm-gpu-1 (autoscaled, GPU)
+└── Node: pve-3 (Tesla P40)
+    ├── VM: cp-2 (control plane, permanent, NOT managed by autoscaler)
+    ├── VM: worker-vm-2 (autoscaled, regular)
+    └── VM: worker-vm-gpu-2 (autoscaled, GPU)
 ```
 
 **VM Placement Strategy:**
@@ -155,32 +159,37 @@ Proxmox Cluster (3 nodes)
 ## Go Types
 
 ```go
-// AuthType distinguishes between password and token authentication
-type AuthType int
+// WorkerNodeConfig defines a regular (CPU/memory) worker type
+type WorkerNodeConfig struct {
+    Name string `json:"name"`
+}
 
-const (
-    AuthPassword AuthType = iota
-    AuthToken
-)
+// GPUNodeConfig defines a GPU worker type with specific PCI devices
+type GPUNodeConfig struct {
+    Type       string              `json:"type"`
+    Nodes      []string            `json:"nodes"`
+    PCIDevices []proxmox.PCIDevice `json:"pci_devices"`
+}
 
 // Config holds all configuration read from the autoscaler-config ConfigMap
 type Config struct {
     ClusterName   string
     MinWorkers    int32
     MaxWorkers    int32
-    MinCPU        int       // Minimum CPUs per worker VM
-    MaxCPU        int       // Maximum CPUs per worker VM
-    MinMemoryGiB  int       // Minimum RAM per worker VM (GiB)
-    MaxMemoryGiB  int       // Maximum RAM per worker VM (GiB)
+    MinCPU        int
+    MaxCPU        int
+    MinMemoryGiB  int
+    MaxMemoryGiB  int
     DiskGiB       int32
     StoragePool   string
     NetworkBridge string
     MACAddress    string
     Serial        string
-    CPUType       string          // Proxmox VM CPU type (default: "host")
-    Tags          string          // Tags applied to provisioned VMs
-    VLANID        int             // VLAN tag for primary network interface
-    PCIDevices   []proxmox.PCIDevice  // PCI passthrough devices
+    CPUType       string
+    Tags          string
+    VLANID        int
+    WorkerNodes   []WorkerNodeConfig
+    GPUNodes      []GPUNodeConfig
 }
 
 // VMSize represents the computed size for a batch of new VMs
@@ -189,19 +198,15 @@ type VMSize struct {
     MemoryGiB int
 }
 
-// PCIDevice represents a PCI passthrough device configuration
-type PCIDevice struct {
-    ID   string `json:"id"`
-    PCIe bool   `json:"pcie"`
-    GPU  bool   `json:"gpu"`
-}
-
 // Reconciler runs the 30s timer loop, reads Config, and manages VMs via Proxmox API
 type Reconciler struct {
-    Proxmox    *proxmox.Client
-    KubeClient kubernetes.Interface
-    Namespace  string
-    BaseVMID   int
+    Proxmox      *proxmox.Client
+    KubeClient   kubernetes.Interface
+    Namespace    string
+    BaseVMID     int
+    BaseGPUVMID  int
+    WorkerPrefix string
+    GPUPrefix    string
 }
 ```
 

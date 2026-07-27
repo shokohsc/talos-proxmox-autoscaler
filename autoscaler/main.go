@@ -74,6 +74,7 @@ func main() {
 		BaseGPUVMID:  baseGPUVMID,
 		WorkerPrefix: workerPrefix,
 		GPUPrefix:    gpuPrefix,
+		InFlight:     make(map[string]bool),
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
