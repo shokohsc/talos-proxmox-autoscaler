@@ -207,6 +207,7 @@ data:
   # Optional: explicit MAC for PXE config lookup
   # mac_address: "52:54:00:AA:BB:CC"
   # serial: "worker-standard-001"
+  # cpu_type: "host"  # Proxmox VM CPU type (default: "host")
 
   # Optional: tags applied to provisioned VMs
   tags: "autoscaler,worker"

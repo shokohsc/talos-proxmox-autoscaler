@@ -96,11 +96,12 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 ```
 
 **VM Provisioning Flow:**
-1. Generate VM config from ConfigMap values (CPU, RAM, disk, network)
-2. Call Proxmox API to clone from template or create from scratch
-3. Start the VM via API call
-4. VM PXE-boots Talos Linux, fetching config from remote config server
-5. Talos joins cluster via bootstrap token
+1. Generate VM config from ConfigMap values (CPU type, CPU count, RAM, disk, network)
+2. If `serial` is set, base64-encode it and append `?base64=1` for the Proxmox `smbios1` parameter
+3. Call Proxmox API to clone from template or create from scratch
+4. Start the VM via API call
+5. VM PXE-boots Talos Linux, fetching config from remote config server
+6. Talos joins cluster via bootstrap token
 
 **VM Destruction Flow:**
 1. Cordon and drain the node (Kubernetes)
@@ -176,6 +177,7 @@ type Config struct {
     NetworkBridge string
     MACAddress    string
     Serial        string
+    CPUType       string          // Proxmox VM CPU type (default: "host")
     Tags          string          // Tags applied to provisioned VMs
     VLANID        int             // VLAN tag for primary network interface
     PCIDevices   []proxmox.PCIDevice  // PCI passthrough devices

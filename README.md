@@ -140,10 +140,11 @@ data:
   base_vmid: "2000"              # Starting VMID for new workers
   tags: "autoscaler,worker"      # Tags applied to provisioned VMs
   vlan_id: "0"                   # VLAN tag for primary interface (0 = no tag)
+  cpu_type: "host"                # VM CPU type (default: "host")
   pci_devices: '[{"id":"0000:01:00.0","pcie":true,"gpu":true}]'  # Optional PCI passthrough
 ```
 
-Optional fields: `mac_address`, `serial`, `proxmox_insecure`, `proxmox_node` (auto-discovers if omitted). See the full `kubernetes/configmap.yaml` for all keys.
+Optional fields: `mac_address`, `serial`, `cpu_type`, `proxmox_insecure`, `proxmox_node` (auto-discovers if omitted). See the full `kubernetes/configmap.yaml` for all keys.
 
 ### Verify
 
