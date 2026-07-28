@@ -27,7 +27,7 @@ func main() {
 		panic(err)
 	}
 	zap.ReplaceGlobals(logger)
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	zap.S().Infow("Starting talos-proxmox-autoscaler", "log_level", logLevel)
 
