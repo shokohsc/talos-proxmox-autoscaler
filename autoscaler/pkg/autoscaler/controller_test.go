@@ -136,8 +136,7 @@ func TestReadConfig(t *testing.T) {
 			"network_bridge":   "vmbr0",
 			"mac_address":      "AA:BB:CC:DD:EE:FF",
 			"serial":           "socket",
-			"worker_nodes":     `[{"name":"worker-vm"}]`,
-			"worker_gpu_nodes": `[{"type":"p4","nodes":["pve1","pve2"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]},{"type":"p40","nodes":["pve3"],"pci_devices":[{"id":"0000:41:00.0","pcie":true,"gpu":true}]}]`,
+			"worker_gpu_nodes": `[{"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]},{"pci_devices":[{"id":"0000:41:00.0","pcie":true,"gpu":true}]}]`,
 		},
 	}
 
@@ -149,15 +148,9 @@ func TestReadConfig(t *testing.T) {
 	assert.Equal(t, 16, cfg.MaxCPU)
 	assert.Equal(t, 32, cfg.MaxMemoryGiB)
 	assert.Equal(t, "vmbr0", cfg.NetworkBridge)
-	require.Len(t, cfg.WorkerNodes, 1)
-	assert.Equal(t, "worker-vm", cfg.WorkerNodes[0].Name)
 	require.Len(t, cfg.GPUNodes, 2)
-	assert.Equal(t, "p4", cfg.GPUNodes[0].Type)
-	assert.Equal(t, []string{"pve1", "pve2"}, cfg.GPUNodes[0].Nodes)
 	require.Len(t, cfg.GPUNodes[0].PCIDevices, 1)
 	assert.Equal(t, "0000:01:00.0", cfg.GPUNodes[0].PCIDevices[0].ID)
-	assert.Equal(t, "p40", cfg.GPUNodes[1].Type)
-	assert.Equal(t, []string{"pve3"}, cfg.GPUNodes[1].Nodes)
 	assert.Equal(t, "0000:41:00.0", cfg.GPUNodes[1].PCIDevices[0].ID)
 }
 
@@ -189,21 +182,6 @@ func TestReadConfigPCIDevicesMalformed(t *testing.T) {
 	_, err := r.readConfig(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worker_gpu_nodes")
-}
-
-func TestReadConfigWorkerNodesMalformed(t *testing.T) {
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
-		Data: map[string]string{
-			"cluster_name": "test",
-			"worker_nodes": `not valid json`,
-		},
-	}
-
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
-	_, err := r.readConfig(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "worker_nodes")
 }
 
 func TestReadConfigMissingClusterName(t *testing.T) {

@@ -342,20 +342,6 @@ func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
 	return nil
 }
 
-func (c *Client) GetVMStatus(ctx context.Context, vmid int) (string, error) {
-	data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/current", c.node, vmid), nil)
-	if err != nil {
-		return "", err
-	}
-	var status struct {
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(data, &status); err != nil {
-		return "", err
-	}
-	return status.Status, nil
-}
-
 func (c *Client) FindVMByName(ctx context.Context, name string) (int, error) {
 	data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu?filter=name=%s", c.node, url.QueryEscape(name)), nil)
 	if err != nil {

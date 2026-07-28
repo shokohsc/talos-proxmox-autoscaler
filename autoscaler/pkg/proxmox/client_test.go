@@ -649,24 +649,6 @@ func TestDeleteVM(t *testing.T) {
 	assert.GreaterOrEqual(t, elapsed.Seconds(), 2.5) // 3s sleep
 }
 
-func TestGetVMStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "GET", r.Method)
-		assert.Contains(t, r.URL.Path, "/status/current")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"data": map[string]string{"status": "running"},
-		})
-	}))
-	defer srv.Close()
-
-	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
-	require.NoError(t, err)
-
-	status, err := c.GetVMStatus(context.Background(), 100)
-	assert.NoError(t, err)
-	assert.Equal(t, "running", status)
-}
-
 func TestFindVMByName_Found(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)

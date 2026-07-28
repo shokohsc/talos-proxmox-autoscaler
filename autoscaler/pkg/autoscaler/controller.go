@@ -30,13 +30,7 @@ type VMSize struct {
 	MemoryGiB int
 }
 
-type WorkerNodeConfig struct {
-	Name string `json:"name"`
-}
-
 type GPUNodeConfig struct {
-	Type       string              `json:"type"`
-	Nodes      []string            `json:"nodes"`
 	PCIDevices []proxmox.PCIDevice `json:"pci_devices"`
 }
 
@@ -54,11 +48,10 @@ type Config struct {
 	MACAddress    string
 	Serial        string
 	CPUType       string
-	Tags          string
-	VLANID        int
+	Tags     string
+	VLANID   int
 
-	WorkerNodes []WorkerNodeConfig
-	GPUNodes    []GPUNodeConfig
+	GPUNodes []GPUNodeConfig
 }
 
 type Reconciler struct {
@@ -192,11 +185,6 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		VLANID:        atoiDefault(d["vlan_id"], 0),
 	}
 
-	if d["worker_nodes"] != "" {
-		if err := json.Unmarshal([]byte(d["worker_nodes"]), &config.WorkerNodes); err != nil {
-			return nil, fmt.Errorf("parse worker_nodes: %w", err)
-		}
-	}
 	if d["worker_gpu_nodes"] != "" {
 		if err := json.Unmarshal([]byte(d["worker_gpu_nodes"]), &config.GPUNodes); err != nil {
 			return nil, fmt.Errorf("parse worker_gpu_nodes: %w", err)
