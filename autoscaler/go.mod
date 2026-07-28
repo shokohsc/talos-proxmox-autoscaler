@@ -2,8 +2,6 @@ module github.com/talos-proxmox-autoscaler
 
 go 1.23.0
 
-toolchain go1.26.5
-
 require (
 	github.com/stretchr/testify v1.9.0
 	go.uber.org/zap v1.28.0
