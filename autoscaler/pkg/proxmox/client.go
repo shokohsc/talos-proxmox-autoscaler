@@ -304,6 +304,9 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 	if config.Serial != "" {
 		params.Set("smbios1", fmt.Sprintf("serial=%s,uuid=%s,base64=1", base64.StdEncoding.EncodeToString([]byte(config.Serial)), randomUUID()))
 	}
+	if config.Tags != "" {
+		params.Set("tags", config.Tags)
+	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
 		return fmt.Errorf("configure cloned VM: %w", err)

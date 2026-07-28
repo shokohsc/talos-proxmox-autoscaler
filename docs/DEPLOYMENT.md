@@ -209,7 +209,7 @@ data:
   # serial: "worker-standard-001"
   # cpu_type: "host"
 
-  # Optional: tags applied to provisioned VMs
+  # Optional: additional tags appended to provisioned VMs (all VMs get default "talos", GPU VMs also get "gpu")
   tags: "autoscaler,worker"
 
   # Optional: VLAN tag for primary network interface

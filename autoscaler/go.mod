@@ -1,13 +1,13 @@
 module github.com/talos-proxmox-autoscaler
 
-go 1.22.0
+go 1.23.0
 
 require (
 	github.com/stretchr/testify v1.8.4
-	go.uber.org/zap v1.27.0
-	k8s.io/api v0.30.1
-	k8s.io/apimachinery v0.30.1
-	k8s.io/client-go v0.30.1
+	go.uber.org/zap v1.28.0
+	k8s.io/api v0.32.0
+	k8s.io/apimachinery v0.32.0
+	k8s.io/client-go v0.32.0
 )
 
 require (
@@ -34,7 +34,7 @@ require (
 	github.com/onsi/gomega v1.32.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	golang.org/x/net v0.23.0 // indirect
+	golang.org/x/net v0.36.0 // indirect
 	golang.org/x/oauth2 v0.18.0 // indirect
 	golang.org/x/sys v0.18.0 // indirect
 	golang.org/x/term v0.18.0 // indirect

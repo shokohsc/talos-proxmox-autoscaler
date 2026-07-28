@@ -128,7 +128,7 @@ VM specs and scaling parameters are defined in a `ConfigMap` called `autoscaler-
 | disk_gib | Disk size per VM | 50 |
 | storage_pool | Proxmox storage pool | (required) |
 | network_bridge | Network bridge | (required) |
-| tags | Space-separated VM tags | (optional) |
+| tags | Comma-separated tags appended to VMs (all VMs get default `talos`, GPU VMs also get `gpu`) | (optional) |
 | worker_nodes | JSON array of regular worker configs | (required) |
 | worker_gpu_nodes | JSON array of GPU worker configs with PCI devices | (optional) |
 | base_vmid | Starting VMID for regular workers | 2000 |

@@ -372,6 +372,15 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			}
 		}
 
+		// Build tags: default "talos" for all VMs, plus "gpu" for GPU workers, plus any config tags
+		tags := "talos"
+		if workerType == "gpu" {
+			tags += ",gpu"
+		}
+		if cfg.Tags != "" {
+			tags += "," + cfg.Tags
+		}
+
 		// Non-blocking: create VM and wait for node in a goroutine
 		go func(vmName string, vmid int, pciDevices []proxmox.PCIDevice) {
 			defer func() {
@@ -397,7 +406,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 				MACAddress:    cfg.MACAddress,
 				Serial:        cfg.Serial,
 				CPUType:       cfg.CPUType,
-				Tags:          cfg.Tags,
+				Tags:          tags,
 				VLANID:        cfg.VLANID,
 				PCIDevices:    pciDevices,
 			})

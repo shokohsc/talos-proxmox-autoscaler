@@ -37,7 +37,7 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 - **ConfigMap-based config** — all VM specs, cluster settings, and scaling parameters live in a single `autoscaler-config` ConfigMap (no CRDs)
 - **Dual auth** — supports both Proxmox API token and username/password authentication (auto-detected from secret fields)
 - **Node auto-discovery** — automatically selects an available cluster node if `proxmox_node` is not configured
-- **VM tags** — configurable tags applied to provisioned VMs for filtering and organization
+- **VM tags** — every VM gets a `talos` tag; GPU workers additionally get `gpu`; ConfigMap `tags` field appended
 - **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
 ## Project Structure

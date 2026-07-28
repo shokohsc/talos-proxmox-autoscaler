@@ -98,7 +98,7 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 ```
 
 **VM Provisioning Flow:**
-1. Generate VM config from ConfigMap values (CPU type, CPU count, RAM, disk, network)
+1. Generate VM config from ConfigMap values (CPU type, CPU count, RAM, disk, network, and tags — all VMs get a default `talos` tag, GPU workers additionally get `gpu`, and ConfigMap tags are appended)
 2. If `serial` is set, base64-encode it and append `?base64=1` for the Proxmox `smbios1` parameter
 3. Call Proxmox API to clone from template or create from scratch
 4. Start the VM via API call
