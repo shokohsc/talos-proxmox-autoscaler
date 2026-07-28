@@ -20,9 +20,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/dependency-review-action@v4
+      - uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
 
@@ -32,18 +32,18 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: go
           working-directory: autoscaler
 
-      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/autobuild@v4
         with:
           working-directory: autoscaler
 
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           working-directory: autoscaler
 
@@ -54,9 +54,9 @@ jobs:
       security-events: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: anchore/scan-action@v4
+      - uses: anchore/scan-action@v7
         id: grype
         with:
           image: ghcr.io/${{ github.repository }}:main
@@ -66,7 +66,7 @@ jobs:
 
       - name: Upload SARIF (only if grype found results)
         if: always() && steps.grype.outputs.exit-code == '1'
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
 
@@ -74,7 +74,7 @@ jobs:
     name: Kubeconform
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install kubeconform
         run: |
