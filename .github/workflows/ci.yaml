@@ -31,8 +31,9 @@ jobs:
         with:
           version: latest
           working-directory: autoscaler
+          args: --fast
         env:
-          GOMEMLIMIT: 6000MiB
+          GOMEMLIMIT: 2GiB
 
   test:
     name: Test
