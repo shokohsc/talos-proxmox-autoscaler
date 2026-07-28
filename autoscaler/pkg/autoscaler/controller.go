@@ -9,12 +9,12 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 
 	"github.com/talos-proxmox-autoscaler/pkg/proxmox"
 )
@@ -79,14 +79,14 @@ type Reconciler struct {
 func (r *Reconciler) Start(ctx context.Context) {
 	ticker := time.NewTicker(reconcileInterval)
 	defer ticker.Stop()
-	klog.Info("Autoscaler started", "interval", reconcileInterval)
+	zap.S().Infow("Autoscaler started", "interval", reconcileInterval)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if err := r.reconcile(ctx); err != nil {
-				klog.Error(err, "Reconcile failed")
+				zap.S().Errorw("Reconcile failed", "error", err)
 			}
 		}
 	}
@@ -100,17 +100,17 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if err := r.Proxmox.ResolveNode(ctx); err != nil {
 		return fmt.Errorf("resolve node: %w", err)
 	}
-	klog.V(2).Info("Config loaded", "cluster", cfg.ClusterName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
+	zap.S().Debugw("Config loaded", "cluster", cfg.ClusterName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 
 	evicted, err := r.findEvictableNodes(ctx, cfg.ClusterName)
 	if err != nil {
 		return err
 	}
 	if len(evicted) > 0 {
-		klog.V(1).Info("Found evictable nodes", "count", len(evicted))
+		zap.S().Infow("Found evictable nodes", "count", len(evicted))
 	}
 	for _, node := range evicted {
-		klog.Info("Removing descheduler-evicted node", "node", node.Name)
+		zap.S().Infow("Removing descheduler-evicted node", "node", node.Name)
 		// Detect type from name prefix to get correct base VMID
 		if strings.HasPrefix(node.Name, cfg.ClusterName+"-"+r.GPUPrefix+"-") {
 			r.drainAndDelete(ctx, node.Name, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
@@ -123,7 +123,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	klog.V(2).Info("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "gpu", pendingGPU, "count", unschedulableCount)
+	zap.S().Debugw("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "gpu", pendingGPU, "count", unschedulableCount)
 
 	currentWorkers := r.countWorkers(ctx, cfg.ClusterName, r.WorkerPrefix)
 	currentGPUWorkers := r.countWorkers(ctx, cfg.ClusterName, r.GPUPrefix)
@@ -143,24 +143,24 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		gpuWorkersNeeded = int32(pendingGPU)
 		// GPU workers use max resources by default
 		gpuVMSize := VMSize{CPU: cfg.MaxCPU, MemoryGiB: cfg.MaxMemoryGiB}
-		klog.V(2).Info("GPU Scale decision", "current", currentGPUWorkers, "needed", gpuWorkersNeeded, "vm_size", gpuVMSize)
+		zap.S().Debugw("GPU Scale decision", "current", currentGPUWorkers, "needed", gpuWorkersNeeded, "vm_size", gpuVMSize)
 		
 		if gpuWorkersNeeded > currentGPUWorkers {
-			klog.Info("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
+			zap.S().Infow("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
 			r.scaleUp(ctx, currentGPUWorkers, gpuWorkersNeeded, gpuVMSize, cfg, "gpu")
 		} else if gpuWorkersNeeded < currentGPUWorkers && unschedulableCount == 0 {
-			klog.Info("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
+			zap.S().Infow("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
 			r.scaleDown(ctx, currentGPUWorkers, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
 		}
 	}
 
-	klog.V(2).Info("Scale decision", "current", currentWorkers, "needed", workersNeeded, "vm_size", vmSize)
+	zap.S().Debugw("Scale decision", "current", currentWorkers, "needed", workersNeeded, "vm_size", vmSize)
 
 	if workersNeeded > currentWorkers {
-		klog.Info("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
+		zap.S().Infow("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
 		r.scaleUp(ctx, currentWorkers, workersNeeded, vmSize, cfg, "vm")
 	} else if workersNeeded < currentWorkers && unschedulableCount == 0 {
-		klog.Info("Scaling down", "current", currentWorkers, "desired", workersNeeded)
+		zap.S().Infow("Scaling down", "current", currentWorkers, "desired", workersNeeded)
 		r.scaleDown(ctx, currentWorkers, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID)
 	}
 
@@ -345,14 +345,14 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 		r.inFlightMu.Lock()
 		if _, exists := r.InFlight[vmName]; exists {
 			r.inFlightMu.Unlock()
-			klog.V(2).Info("VM already in-flight, skipping", "name", vmName)
+			zap.S().Debugw("VM already in-flight, skipping", "name", vmName)
 			continue
 		}
 		r.inFlightMu.Unlock()
 
 		// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
 		if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
-			klog.V(2).Info("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
+			zap.S().Debugw("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
 			continue
 		}
 
@@ -360,7 +360,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 		r.InFlight[vmName] = true
 		r.inFlightMu.Unlock()
 
-		klog.Info("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
+		zap.S().Infow("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
 
 		var pciDevices []proxmox.PCIDevice
 		if workerType == "gpu" {
@@ -382,7 +382,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 
 			// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
 			if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
-				klog.V(2).Info("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
+				zap.S().Debugw("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
 				return
 			}
 
@@ -402,11 +402,11 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 				PCIDevices:    pciDevices,
 			})
 			if err != nil {
-				klog.Error(err, "Failed to create VM", "vmid", vmid)
+				zap.S().Errorw("Failed to create VM", "error", err, "vmid", vmid)
 				return
 			}
 			if err := r.waitForNodeReady(ctx, ip); err != nil {
-				klog.Error(err, "Node not ready after provisioning", "ip", ip)
+				zap.S().Errorw("Node not ready after provisioning", "error", err, "ip", ip)
 			}
 		}(vmName, vmid, pciDevices)
 	}
@@ -415,7 +415,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 func (r *Reconciler) scaleDown(ctx context.Context, current, desired int32, clusterName, prefix string, baseVMID int) {
 	for i := current; i > desired; i-- {
 		nodeName := fmt.Sprintf("%s-%s-%d", clusterName, prefix, i-1)
-		klog.Info("Removing worker node", "node", nodeName)
+		zap.S().Infow("Removing worker node", "node", nodeName)
 		r.drainAndDelete(ctx, nodeName, clusterName, prefix, baseVMID)
 	}
 }
@@ -426,17 +426,17 @@ func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName, 
 	// ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
 	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-"+prefix+"-")
 	if !ok {
-		klog.Error(fmt.Errorf("unexpected node name format: %s", nodeName), "Failed to parse VM index")
+		zap.S().Errorw("Failed to parse VM index", "error", fmt.Errorf("unexpected node name format: %s", nodeName))
 		return
 	}
 	var vmIndex int
 	if _, err := fmt.Sscanf(suffix, "%d", &vmIndex); err != nil {
-		klog.Error(err, "Failed to parse VM index", "node", nodeName)
+		zap.S().Errorw("Failed to parse VM index", "error", err, "node", nodeName)
 		return
 	}
 	vmid := baseVMID + vmIndex
 	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
-		klog.Error(err, "Failed to delete VM", "vmid", vmid)
+		zap.S().Errorw("Failed to delete VM", "error", err, "vmid", vmid)
 	}
 }
 
@@ -474,7 +474,7 @@ func (r *Reconciler) waitForNodeReady(ctx context.Context, ip string) error {
 					if addr.Address == ip && addr.Type == corev1.NodeInternalIP {
 						for _, c := range node.Status.Conditions {
 							if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-								klog.Info("Node ready", "node", node.Name, "ip", ip)
+								zap.S().Infow("Node ready", "node", node.Name, "ip", ip)
 								return nil
 							}
 						}

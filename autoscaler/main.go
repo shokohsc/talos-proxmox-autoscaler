@@ -2,32 +2,34 @@ package main
 
 import (
 	"context"
-	"flag"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog/v2"
 
 	"github.com/talos-proxmox-autoscaler/pkg/autoscaler"
 	"github.com/talos-proxmox-autoscaler/pkg/proxmox"
 )
 
 func main() {
-	klog.InitFlags(nil)
-	flag.Parse()
-
 	logLevel := getEnv("LOG_LEVEL", "info")
-	verbosity := logLevelToVerbosity(logLevel)
-	_ = flag.Set("v", strconv.Itoa(verbosity))
-	_ = flag.Set("logtostderr", "true")
-	_ = flag.Set("alsologtostderr", "true")
-	flag.Parse()
 
-	klog.Info("Starting talos-proxmox-autoscaler", "log_level", logLevel)
+	level := zap.NewAtomicLevelAt(zapLogLevel(logLevel))
+	cfg := zap.NewProductionConfig()
+	cfg.Level = level
+	logger, err := cfg.Build()
+	if err != nil {
+		panic(err)
+	}
+	zap.ReplaceGlobals(logger)
+	defer logger.Sync()
+
+	zap.S().Infow("Starting talos-proxmox-autoscaler", "log_level", logLevel)
 
 	proxmoxURL := getEnv("PROXMOX_API_URL", "https://pve.example.com:8006")
 	proxmoxNode := getEnv("PROXMOX_NODE", "pve")
@@ -47,24 +49,24 @@ func main() {
 	workerPrefix := getEnv("WORKER_PREFIX", "worker-vm")
 	gpuPrefix := getEnv("GPU_PREFIX", "worker-vm-gpu")
 
-	klog.V(1).Info("Proxmox configuration", "url", proxmoxURL, "node", proxmoxNode, "insecure", insecure)
+	zap.S().Infow("Proxmox configuration", "url", proxmoxURL, "node", proxmoxNode, "insecure", insecure)
 
 	proxmoxClient, err := proxmox.NewClient(proxmoxURL, username, password, tokenID, tokenSecret, proxmoxNode, insecure)
 	if err != nil {
-		klog.Fatalf("Unable to create proxmox client: %v", err)
+		zap.S().Fatalf("Unable to create proxmox client: %v", err)
 	}
 
 	restConfig, err := rest.InClusterConfig()
 	if err != nil {
-		klog.Fatalf("Unable to get in-cluster config: %v", err)
+		zap.S().Fatalf("Unable to get in-cluster config: %v", err)
 	}
 	kubeClient, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		klog.Fatalf("Unable to create kubernetes client: %v", err)
+		zap.S().Fatalf("Unable to create kubernetes client: %v", err)
 	}
 
 	namespace := getEnv("NAMESPACE", "autoscaler-system")
-	klog.V(1).Info("Controller configuration", "namespace", namespace, "base_vmid", baseVMID)
+	zap.S().Infow("Controller configuration", "namespace", namespace, "base_vmid", baseVMID)
 
 	r := &autoscaler.Reconciler{
 		Proxmox:      proxmoxClient,
@@ -83,20 +85,18 @@ func main() {
 	r.Start(ctx)
 }
 
-// logLevelToVerbosity maps log level names to klog verbosity.
-// klog verbosity: 0=info+, 1=info, 2=debug, 3=trace
-func logLevelToVerbosity(level string) int {
+func zapLogLevel(level string) zapcore.Level {
 	switch level {
-	case "trace":
-		return 3
-	case "debug":
-		return 2
+	case "trace", "debug":
+		return zap.DebugLevel
 	case "info":
-		return 1
-	case "warn", "error":
-		return 0
+		return zap.InfoLevel
+	case "warn":
+		return zap.WarnLevel
+	case "error":
+		return zap.ErrorLevel
 	default:
-		return 1
+		return zap.InfoLevel
 	}
 }
 

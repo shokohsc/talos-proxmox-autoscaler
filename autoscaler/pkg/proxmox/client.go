@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/klog/v2"
+	"go.uber.org/zap"
 )
 
 type AuthType int
@@ -170,7 +170,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	klog.V(2).Info("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
+	zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -189,8 +189,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 }
 
 func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) {
-	log := klog.FromContext(ctx)
-	klog.V(1).Info("Creating VM", "vmid", config.VMID, "name", config.Name, "cpu", config.VCPU, "memory_mib", config.MemoryMiB)
+	zap.S().Infow("Creating VM", "vmid", config.VMID, "name", config.Name, "cpu", config.VCPU, "memory_mib", config.MemoryMiB)
 
 	if config.TemplateID > 0 {
 		if err := c.cloneVM(ctx, config); err != nil {
@@ -211,7 +210,7 @@ func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) 
 		return "", fmt.Errorf("wait for IP of VM %d: %w", config.VMID, err)
 	}
 
-	log.Info("VM created and started", "vmid", config.VMID, "name", config.Name, "ip", ip)
+	zap.S().Infow("VM created and started", "vmid", config.VMID, "name", config.Name, "ip", ip)
 	return ip, nil
 }
 
@@ -324,7 +323,6 @@ func (c *Client) StopVM(ctx context.Context, vmid int) error {
 }
 
 func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
-	log := klog.FromContext(ctx)
 
 	// Try to stop first (ignore error if already stopped)
 	_ = c.StopVM(ctx, vmid)
@@ -337,7 +335,7 @@ func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
 		return fmt.Errorf("delete VM %d: %w", vmid, err)
 	}
 
-	log.Info("VM deleted", "vmid", vmid)
+	zap.S().Infow("VM deleted", "vmid", vmid)
 	return nil
 }
 
@@ -471,7 +469,7 @@ func (c *Client) GetNode(ctx context.Context) (string, error) {
 				return c.node, nil
 			}
 		}
-		klog.Warningf("Configured node %q not found in cluster, using first available: %s", c.node, nodes[0])
+		zap.S().Warnf("Configured node %q not found in cluster, using first available: %s", c.node, nodes[0])
 	}
 
 	return nodes[0], nil
