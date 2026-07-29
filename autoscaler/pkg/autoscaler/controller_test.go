@@ -306,9 +306,9 @@ func TestAggregatePending_WithGPU(t *testing.T) {
 					Name: "gpu-app",
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:              resource.MustParse("2"),
-							corev1.ResourceMemory:           resource.MustParse("4Gi"),
-							"nvidia.com/gpu":                resource.MustParse("1"),
+							corev1.ResourceCPU:    resource.MustParse("2"),
+							corev1.ResourceMemory: resource.MustParse("4Gi"),
+							"nvidia.com/gpu":      resource.MustParse("1"),
 						},
 					},
 				},

@@ -57,7 +57,7 @@ type VMConfig struct {
 	TemplateID    int
 	Tags          string
 	VLANID        int
-	PCIDevices   []PCIDevice
+	PCIDevices    []PCIDevice
 }
 
 type Node struct {
@@ -110,7 +110,7 @@ func (c *Client) login() error {
 	if err != nil {
 		return fmt.Errorf("login request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -169,7 +169,7 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
 
 	respBody, err := io.ReadAll(resp.Body)

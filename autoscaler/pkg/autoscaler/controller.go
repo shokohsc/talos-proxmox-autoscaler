@@ -48,8 +48,8 @@ type Config struct {
 	MACAddress    string
 	Serial        string
 	CPUType       string
-	Tags     string
-	VLANID   int
+	Tags          string
+	VLANID        int
 
 	GPUNodes []GPUNodeConfig
 }
@@ -130,14 +130,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
-	
+
 	gpuWorkersNeeded := int32(0)
 	if pendingGPU > 0 {
 		gpuWorkersNeeded = int32(pendingGPU)
 		// GPU workers use max resources by default
 		gpuVMSize := VMSize{CPU: cfg.MaxCPU, MemoryGiB: cfg.MaxMemoryGiB}
 		zap.S().Debugw("GPU Scale decision", "current", currentGPUWorkers, "needed", gpuWorkersNeeded, "vm_size", gpuVMSize)
-		
+
 		if gpuWorkersNeeded > currentGPUWorkers {
 			zap.S().Infow("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
 			r.scaleUp(ctx, currentGPUWorkers, gpuWorkersNeeded, gpuVMSize, cfg, "gpu")
