@@ -46,10 +46,9 @@ Scale range: **1–20 workers per type** (configurable). Three control plane nod
 
 ### Prerequisites
 
-- Proxmox VE 8.x cluster (3 nodes)
-- Talos Linux ISO uploaded to Proxmox
+- Proxmox VE 9.2.x cluster (3 nodes)
 - Kubernetes cluster with 3 permanent control planes
-- Go >= 1.22
+- Go >= 1.26
 - kubectl configured for target cluster
 - PXE boot infrastructure with a Talos config server
 

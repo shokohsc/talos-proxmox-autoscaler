@@ -6,10 +6,9 @@ Step-by-step guide for deploying the Talos Kubernetes Node Autoscaler on a 3-nod
 
 ### Infrastructure
 
-- **Proxmox VE 8.x** cluster with 3 nodes
+- **Proxmox VE 9.2.x** cluster with 3 nodes
 - **Network**: bridged interface for Kubernetes traffic (e.g., `vmbr1`)
 - **Storage**: shared storage (ZFS, Ceph, or NFS) for VM disks
-- **ISO**: Talos Linux ISO uploaded to Proxmox (`pvesm download iso ...`)
 - **PXE boot infrastructure**: TFTP server and Talos config server for worker boot
 
 ### Software
@@ -18,7 +17,7 @@ Step-by-step guide for deploying the Talos Kubernetes Node Autoscaler on a 3-nod
 |------|---------|---------|
 | `kubectl` | >= 1.29 | Cluster management |
 | `talosctl` | matching Talos version | Talos cluster management |
-| `go` | >= 1.22 | Building the autoscaler |
+| `go` | >= 1.26 | Building the autoscaler |
 | `make` | any | Build automation |
 
 ### Cluster State
@@ -451,7 +450,6 @@ The deployment already includes:
 
 - [ ] Dedicated Proxmox API user created (not root)
 - [ ] API token tested and working
-- [ ] Talos ISO uploaded and available
 - [ ] PXE boot infrastructure configured
 - [ ] ConfigMap `autoscaler-config` created with correct VM specs
 - [ ] Autoscaler pod is running and healthy

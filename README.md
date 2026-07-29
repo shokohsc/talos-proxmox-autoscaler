@@ -78,10 +78,9 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 
 ### Prerequisites
 
-- Proxmox VE 8.x cluster (3 nodes)
-- Talos Linux ISO uploaded to Proxmox
+- Proxmox VE 9.2.x cluster (3 nodes)
 - Kubernetes cluster with 3 permanent control planes
-- Go >= 1.22
+- Go >= 1.26
 - PXE boot infrastructure with a Talos config server
 
 ### Install
