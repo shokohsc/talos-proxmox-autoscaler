@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/component: autoscaler
 data:
   cluster_name: "talos"
+  autoscaler_tag: "talos"
   min_workers: "1"
   max_workers: "20"
   min_cpu: "2"
