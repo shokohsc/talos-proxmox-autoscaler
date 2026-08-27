@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"go.uber.org/zap"
@@ -105,7 +106,7 @@ func readFile(path string) string {
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	return strings.TrimSpace(string(data))
 }
 
 func getEnv(key, fallback string) string {
