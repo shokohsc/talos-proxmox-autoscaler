@@ -906,3 +906,34 @@ func TestDo_APIError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 }
+
+func TestListVMs(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.RequestURI()
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{
+				{"vmid": 100, "name": "vm-a", "node": "pve1", "status": "running", "type": "qemu", "template": 0, "tags": "talos,worker"},
+				{"vmid": 200, "name": "vm-b", "node": "pve2", "status": "stopped", "type": "lxc", "template": 1, "tags": "talos;gpu"},
+				{"vmid": 300, "name": "vm-c", "node": "pve3", "status": "running", "type": "qemu", "template": 0, "tags": ""},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "", true)
+	require.NoError(t, err)
+
+	vms, err := c.ListVMs(context.Background())
+	require.NoError(t, err)
+	require.Len(t, vms, 3)
+	assert.Equal(t, "/api2/json/cluster/resources?type=vm", gotPath)
+	assert.Equal(t, 100, vms[0].VMID)
+	assert.Equal(t, "vm-a", vms[0].Name)
+	assert.Equal(t, "pve1", vms[0].Node)
+	assert.Equal(t, "qemu", vms[0].Type)
+	assert.Equal(t, 0, vms[0].Template)
+	assert.Equal(t, "talos,worker", vms[0].Tags)
+	assert.Equal(t, "talos;gpu", vms[1].Tags)
+	assert.Equal(t, 1, vms[1].Template)
+}

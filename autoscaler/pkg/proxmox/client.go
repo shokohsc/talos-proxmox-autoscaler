@@ -422,6 +422,31 @@ func (c *Client) waitForTask(ctx context.Context, upid string) error {
 	return fmt.Errorf("timeout waiting for task %s", upid)
 }
 
+// VM is a virtual machine or container visible cluster-wide (qemu + lxc).
+type VM struct {
+	VMID     int    `json:"vmid"`
+	Name     string `json:"name"`
+	Node     string `json:"node"`
+	Status   string `json:"status"`
+	Type     string `json:"type"`
+	Template int    `json:"template"`
+	Tags     string `json:"tags"` // "," or ";" separated string
+}
+
+// ListVMs returns every VM in the cluster. The API token needs the Audit
+// privilege on the /vm/ ACL path for tags to be visible.
+func (c *Client) ListVMs(ctx context.Context) ([]VM, error) {
+	data, err := c.do(ctx, "GET", "/api2/json/cluster/resources?type=vm", nil)
+	if err != nil {
+		return nil, err
+	}
+	var vms []VM
+	if err := json.Unmarshal(data, &vms); err != nil {
+		return nil, err
+	}
+	return vms, nil
+}
+
 func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
 	data, err := c.do(ctx, "GET", "/api2/json/nodes", nil)
 	if err != nil {
