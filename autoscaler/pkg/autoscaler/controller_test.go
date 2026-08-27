@@ -341,29 +341,6 @@ func TestAggregatePending_NoPods(t *testing.T) {
 	assert.True(t, mem.IsZero())
 }
 
-func TestCountWorkers(t *testing.T) {
-	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-gpu-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-control-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "other-worker-vm-0"}},
-	}
-
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
-	count := r.countWorkers(context.Background(), "test-cluster", "worker-vm")
-	assert.Equal(t, int32(2), count)
-
-	gpuCount := r.countWorkers(context.Background(), "test-cluster", "worker-vm-gpu")
-	assert.Equal(t, int32(1), gpuCount)
-}
-
-func TestCountWorkers_None(t *testing.T) {
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
-	count := r.countWorkers(context.Background(), "test-cluster", "worker-vm")
-	assert.Equal(t, int32(0), count)
-}
-
 func TestFindEvictableNodes(t *testing.T) {
 	nodes := []corev1.Node{
 		{
@@ -472,13 +449,8 @@ func TestDrainAndDelete(t *testing.T) {
 
 func TestScaleUp(t *testing.T) {
 	var createdVMCount atomic.Int32
+	var tagValues []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api2/json/access/ticket" {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},
-			})
-			return
-		}
 		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{
@@ -497,6 +469,7 @@ func TestScaleUp(t *testing.T) {
 			_ = r.ParseForm()
 			if r.FormValue("vmid") != "" {
 				createdVMCount.Add(1)
+				tagValues = append(tagValues, r.FormValue("tags"))
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -509,12 +482,8 @@ func TestScaleUp(t *testing.T) {
 	readyNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "ready-node"},
 		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: "10.0.0.5"},
-			},
-			Conditions: []corev1.NodeCondition{
-				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
-			},
+			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.5"}},
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		},
 	}
 
@@ -525,11 +494,11 @@ func TestScaleUp(t *testing.T) {
 		Namespace:    "autoscaler-system",
 		WorkerPrefix: "worker-vm",
 		GPUPrefix:    "worker-vm-gpu",
-		InFlight:     make(map[string]bool),
 	}
 
 	cfg := &Config{
 		ClusterName:   "test",
+		AutoScalerTag: "talos",
 		DiskGiB:       50,
 		StoragePool:   "local-lvm",
 		NetworkBridge: "vmbr0",
@@ -539,9 +508,8 @@ func TestScaleUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r.scaleUp(ctx, 0, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm")
+	r.scaleUp(ctx, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", nil)
 
-	// scaleUp is non-blocking (goroutines); wait for VMs to be created
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if int(createdVMCount.Load()) >= 3 {
@@ -550,6 +518,86 @@ func TestScaleUp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	assert.Equal(t, int32(3), createdVMCount.Load())
+	require.Len(t, tagValues, 3)
+	for _, tv := range tagValues {
+		assert.Equal(t, "talos", tv)
+	}
+}
+
+func TestScaleUp_GPU(t *testing.T) {
+	var createdVMCount atomic.Int32
+	var tagValues []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"name": "eth0", "ip-addresses": []map[string]interface{}{
+						{"ip-address": "10.0.0.5", "ip-address-type": "ipv4"},
+					}},
+				},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/status/start") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
+		if r.Method == "POST" {
+			_ = r.ParseForm()
+			if r.FormValue("vmid") != "" {
+				createdVMCount.Add(1)
+				tagValues = append(tagValues, r.FormValue("tags"))
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	readyNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "ready-node"},
+		Status: corev1.NodeStatus{
+			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.5"}},
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	r := &Reconciler{
+		KubeClient:   fake.NewSimpleClientset(readyNode),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		BaseGPUVMID:  3000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+
+	cfg := &Config{
+		ClusterName:   "test",
+		AutoScalerTag: "talos",
+		DiskGiB:       50,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+		GPUNodes:      []GPUNodeConfig{{PCIDevices: []proxmox.PCIDevice{{ID: "0000:01:00.0", PCIe: true, GPU: true}}}},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "gpu", nil)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if int(createdVMCount.Load()) >= 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Equal(t, int32(2), createdVMCount.Load())
+	require.Len(t, tagValues, 2)
+	assert.Equal(t, "talos,gpu", tagValues[0])
 }
 
 func TestScaleDown(t *testing.T) {
@@ -575,14 +623,52 @@ func TestScaleDown(t *testing.T) {
 		GPUPrefix:    "worker-vm-gpu",
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	owned := []proxmox.VM{
+		{VMID: 1002, Name: "test-cluster-worker-vm-2", Tags: "talos"},
+		{VMID: 1001, Name: "test-cluster-worker-vm-1", Tags: "talos"},
+		{VMID: 1000, Name: "test-cluster-worker-vm-0", Tags: "talos"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	r.scaleDown(ctx, 3, 1, "test-cluster", "worker-vm", 1000)
+	r.scaleDown(ctx, 1, "test-cluster", "worker-vm", 1000, owned)
 
 	assert.Len(t, deletedVMIDs, 2)
 	assert.Contains(t, deletedVMIDs, 1002)
 	assert.Contains(t, deletedVMIDs, 1001)
+}
+
+func TestScaleDown_SkipsUnregisteredNode(t *testing.T) {
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerBatch(t, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	nodes := []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0"}},
+	}
+
+	r := &Reconciler{
+		KubeClient:   fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+
+	owned := []proxmox.VM{
+		{VMID: 1002, Name: "test-cluster-worker-vm-2", Tags: "talos"},
+		{VMID: 1001, Name: "test-cluster-worker-vm-1", Tags: "talos"},
+		{VMID: 1000, Name: "test-cluster-worker-vm-0", Tags: "talos"},
+	}
+
+	r.scaleDown(context.Background(), 1, "test-cluster", "worker-vm", 1000, owned)
+
+	assert.Equal(t, []int{1000}, deletedVMIDs)
 }
 
 func TestWaitForNodeReady_AlreadyReady(t *testing.T) {
@@ -639,7 +725,6 @@ func TestReconcile_ScaleUp(t *testing.T) {
 			"storage_pool":     "local-lvm",
 			"network_bridge":   "vmbr0",
 			"mac_address":      "AA:BB:CC:DD:EE:FF",
-			"worker_nodes":     `[{"name":"worker-vm"}]`,
 			"worker_gpu_nodes": `[{"type":"p4","nodes":["worker-vm-gpu"],"pci_devices":[{"id":"0000:01:00.0","pcie":true,"gpu":true}]}]`,
 		},
 	}
@@ -647,34 +732,26 @@ func TestReconcile_ScaleUp(t *testing.T) {
 	pendingPod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pending-pod", Namespace: "default"},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name: "app",
-				Resources: corev1.ResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceCPU: resource.MustParse("2"),
-					},
-				},
-			}},
+			Containers: []corev1.Container{{Name: "app", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2")},
+			}}},
 		},
 		Status: corev1.PodStatus{
-			Phase: corev1.PodPending,
-			Conditions: []corev1.PodCondition{
-				{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue},
-			},
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue}},
 		},
 	}
 
 	var createdVMCount atomic.Int32
+	var tagValues []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
+			return
+		}
 		if r.URL.Path == "/api2/json/nodes" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
-			})
-			return
-		}
-		if r.URL.Path == "/api2/json/access/ticket" {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},
 			})
 			return
 		}
@@ -688,10 +765,11 @@ func TestReconcile_ScaleUp(t *testing.T) {
 			})
 			return
 		}
-		if r.Method == "POST" && r.URL.Path != "" {
+		if r.Method == "POST" {
 			_ = r.ParseForm()
 			if r.FormValue("vmid") != "" {
 				createdVMCount.Add(1)
+				tagValues = append(tagValues, r.FormValue("tags"))
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -704,12 +782,8 @@ func TestReconcile_ScaleUp(t *testing.T) {
 	readyNode := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "ready-node"},
 		Status: corev1.NodeStatus{
-			Addresses: []corev1.NodeAddress{
-				{Type: corev1.NodeInternalIP, Address: "10.0.0.5"},
-			},
-			Conditions: []corev1.NodeCondition{
-				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
-			},
+			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.5"}},
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
 		},
 	}
 
@@ -720,7 +794,6 @@ func TestReconcile_ScaleUp(t *testing.T) {
 		Namespace:    "autoscaler-system",
 		WorkerPrefix: "worker-vm",
 		GPUPrefix:    "worker-vm-gpu",
-		InFlight:     make(map[string]bool),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -729,7 +802,6 @@ func TestReconcile_ScaleUp(t *testing.T) {
 	err = r.reconcile(ctx)
 	assert.NoError(t, err)
 
-	// reconcile returns immediately (non-blocking scaleUp); wait for goroutines
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if createdVMCount.Load() >= 1 {
@@ -738,6 +810,8 @@ func TestReconcile_ScaleUp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	assert.GreaterOrEqual(t, int(createdVMCount.Load()), 1)
+	require.NotEmpty(t, tagValues)
+	assert.Equal(t, "talos", tagValues[0])
 }
 
 func TestReconcile_ScaleDown(t *testing.T) {
@@ -754,7 +828,6 @@ func TestReconcile_ScaleDown(t *testing.T) {
 			"disk_gib":       "50",
 			"storage_pool":   "local-lvm",
 			"network_bridge": "vmbr0",
-			"worker_nodes":   `[{"name":"worker-vm"}]`,
 		},
 	}
 
@@ -764,8 +837,14 @@ func TestReconcile_ScaleDown(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-2"}},
 	}
 
+	vms := []map[string]interface{}{
+		vmRes(1000, "test-worker-vm-0", "talos", 0),
+		vmRes(1001, "test-worker-vm-1", "talos", 0),
+		vmRes(1002, "test-worker-vm-2", "talos", 0),
+	}
+
 	var deletedVMIDs []int
-	srv := newMockProxmoxServerBatch(t, &deletedVMIDs)
+	srv := newMockProxmoxServerWithVMs(t, vms, &deletedVMIDs)
 	defer srv.Close()
 
 	proxmoxClient, err := newTestProxmoxClient(srv.URL)
@@ -778,15 +857,16 @@ func TestReconcile_ScaleDown(t *testing.T) {
 		Namespace:    "autoscaler-system",
 		WorkerPrefix: "worker-vm",
 		GPUPrefix:    "worker-vm-gpu",
-		InFlight:     make(map[string]bool),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	err = r.reconcile(ctx)
 	assert.NoError(t, err)
 	assert.Len(t, deletedVMIDs, 2)
+	assert.Contains(t, deletedVMIDs, 1002)
+	assert.Contains(t, deletedVMIDs, 1001)
 }
 
 func TestReconcile_NoAction(t *testing.T) {
@@ -800,23 +880,26 @@ func TestReconcile_NoAction(t *testing.T) {
 			"max_cpu":        "4",
 			"min_memory_gib": "4",
 			"max_memory_gib": "8",
-			"worker_nodes":   `[{"name":"worker-vm"}]`,
 		},
 	}
 
-	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
+	vms := []map[string]interface{}{
+		vmRes(1000, "test-worker-vm-0", "talos", 0),
+		vmRes(1001, "test-worker-vm-1", "talos", 0),
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": vms})
+			return
+		}
 		if r.URL.Path == "/api2/json/nodes" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
 			})
 			return
 		}
-		t.Fatal("no proxmox calls expected beyond node resolution")
+		t.Fatal("no proxmox calls expected beyond node resolution and VM listing")
 	}))
 	defer srv.Close()
 
@@ -824,13 +907,12 @@ func TestReconcile_NoAction(t *testing.T) {
 	require.NoError(t, err)
 
 	r := &Reconciler{
-		KubeClient:   fake.NewSimpleClientset(cm, &corev1.NodeList{Items: nodes}),
+		KubeClient:   fake.NewSimpleClientset(cm),
 		Proxmox:      proxmoxClient,
 		BaseVMID:     1000,
 		Namespace:    "autoscaler-system",
 		WorkerPrefix: "worker-vm",
 		GPUPrefix:    "worker-vm-gpu",
-		InFlight:     make(map[string]bool),
 	}
 
 	err = r.reconcile(context.Background())
@@ -877,6 +959,50 @@ func newMockProxmoxServer(t *testing.T, deletedVMID *int) *httptest.Server {
 func newMockProxmoxServerBatch(t *testing.T, deletedVMIDs *[]int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
+		if r.URL.Path == "/api2/json/access/ticket" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{"ticket": "t", "CSRFPreventionToken": "c"},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/status/stop") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
+		if r.Method == "DELETE" && strings.Contains(r.URL.Path, "/qemu/") {
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 6 {
+				var vmid int
+				_, _ = fmt.Sscanf(parts[len(parts)-1], "%d", &vmid)
+				*deletedVMIDs = append(*deletedVMIDs, vmid)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+}
+
+func vmRes(vmid int, name, tags string, template int) map[string]interface{} {
+	return map[string]interface{}{
+		"vmid": vmid, "name": name, "node": "pve", "status": "running",
+		"type": "qemu", "template": template, "tags": tags,
+	}
+}
+
+func newMockProxmoxServerWithVMs(t *testing.T, vms []map[string]interface{}, deletedVMIDs *[]int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": vms})
+			return
+		}
 		if r.URL.Path == "/api2/json/nodes" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},

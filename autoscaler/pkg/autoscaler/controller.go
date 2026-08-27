@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -64,11 +64,6 @@ type Reconciler struct {
 	WorkerPrefix string // e.g. "worker-vm"
 	GPUPrefix    string // e.g. "worker-vm-gpu"
 	configHash   string
-
-	// ponytail: in-flight VMs tracked by name, prevents duplicate creation
-	// when reconcile fires before previous VMs join the cluster
-	InFlight   map[string]bool
-	inFlightMu sync.Mutex
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -120,15 +115,14 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	zap.S().Debugw("Pending pods", "cpu", pendingCPU.String(), "memory", pendingMem.String(), "gpu", pendingGPU, "count", unschedulableCount)
 
-	currentWorkers := r.countWorkers(ctx, cfg.ClusterName, r.WorkerPrefix)
-	currentGPUWorkers := r.countWorkers(ctx, cfg.ClusterName, r.GPUPrefix)
-
-	// Count in-flight VMs as current to prevent duplicate creation
-	// when reconcile fires before previous VMs join the cluster
-	inFlightRegular := r.countInFlight(cfg.ClusterName, r.WorkerPrefix)
-	inFlightGPU := r.countInFlight(cfg.ClusterName, r.GPUPrefix)
-	currentWorkers += inFlightRegular
-	currentGPUWorkers += inFlightGPU
+	vms, err := r.Proxmox.ListVMs(ctx)
+	if err != nil {
+		return fmt.Errorf("list vms: %w", err)
+	}
+	ownedRegular := filterOwned(vms, cfg.ClusterName, r.WorkerPrefix, cfg.AutoScalerTag, false)
+	ownedGPU := filterOwned(vms, cfg.ClusterName, r.GPUPrefix, cfg.AutoScalerTag, true)
+	currentWorkers := int32(len(ownedRegular))
+	currentGPUWorkers := int32(len(ownedGPU))
 
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
@@ -142,10 +136,10 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 
 		if gpuWorkersNeeded > currentGPUWorkers {
 			zap.S().Infow("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
-			r.scaleUp(ctx, currentGPUWorkers, gpuWorkersNeeded, gpuVMSize, cfg, "gpu")
+			r.scaleUp(ctx, gpuWorkersNeeded, gpuVMSize, cfg, "gpu", ownedGPU)
 		} else if gpuWorkersNeeded < currentGPUWorkers && unschedulableCount == 0 {
 			zap.S().Infow("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
-			r.scaleDown(ctx, currentGPUWorkers, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
+			r.scaleDown(ctx, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID, ownedGPU)
 		}
 	}
 
@@ -153,10 +147,10 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 
 	if workersNeeded > currentWorkers {
 		zap.S().Infow("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
-		r.scaleUp(ctx, currentWorkers, workersNeeded, vmSize, cfg, "vm")
+		r.scaleUp(ctx, workersNeeded, vmSize, cfg, "vm", ownedRegular)
 	} else if workersNeeded < currentWorkers && unschedulableCount == 0 {
 		zap.S().Infow("Scaling down", "current", currentWorkers, "desired", workersNeeded)
-		r.scaleDown(ctx, currentWorkers, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID)
+		r.scaleDown(ctx, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID, ownedRegular)
 	}
 
 	return nil
@@ -275,41 +269,6 @@ func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, p
 	return needed, size
 }
 
-func (r *Reconciler) countWorkers(ctx context.Context, clusterName, prefix string) int32 {
-	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return 0
-	}
-	count := int32(0)
-	fullPrefix := clusterName + "-" + prefix + "-"
-	for _, node := range nodeList.Items {
-		if strings.HasPrefix(node.Name, fullPrefix) {
-			// Ensure exact prefix match: next char must be digit (or end of string)
-			idx := len(fullPrefix)
-			if idx == len(node.Name) || (idx < len(node.Name) && node.Name[idx] >= '0' && node.Name[idx] <= '9') {
-				count++
-			}
-		}
-	}
-	return count
-}
-
-func (r *Reconciler) countInFlight(clusterName, prefix string) int32 {
-	r.inFlightMu.Lock()
-	defer r.inFlightMu.Unlock()
-	count := int32(0)
-	fullPrefix := clusterName + "-" + prefix + "-"
-	for name := range r.InFlight {
-		if strings.HasPrefix(name, fullPrefix) {
-			idx := len(fullPrefix)
-			if idx == len(name) || (idx < len(name) && name[idx] >= '0' && name[idx] <= '9') {
-				count++
-			}
-		}
-	}
-	return count
-}
-
 func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string) ([]corev1.Node, error) {
 	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -379,7 +338,7 @@ func filterOwned(vms []proxmox.VM, clusterName, prefix, autoscalerTag string, gp
 	return owned
 }
 
-func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size VMSize, cfg *Config, workerType string) {
+func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, owned []proxmox.VM) {
 	prefix := r.WorkerPrefix
 	baseVMID := r.BaseVMID
 	if workerType == "gpu" {
@@ -387,29 +346,24 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 		baseVMID = r.BaseGPUVMID
 	}
 
-	for i := current; i < desired; i++ {
-		vmid := baseVMID + int(i)
-		vmName := fmt.Sprintf("%s-%s-%d", cfg.ClusterName, prefix, i)
+	existing := make(map[string]bool, len(owned))
+	nextIndex := -1
+	for _, vm := range owned {
+		existing[vm.Name] = true
+		if idx := vmIndex(vm.Name, cfg.ClusterName, prefix); idx > nextIndex {
+			nextIndex = idx
+		}
+	}
 
-		// Check if already in-flight (shouldn't happen with in-flight counting, but guard anyway)
-		r.inFlightMu.Lock()
-		if _, exists := r.InFlight[vmName]; exists {
-			r.inFlightMu.Unlock()
-			zap.S().Debugw("VM already in-flight, skipping", "name", vmName)
+	createCount := len(owned)
+	for i := 0; createCount < int(desired); i++ {
+		index := nextIndex + 1 + i
+		vmid := baseVMID + index
+		vmName := fmt.Sprintf("%s-%s-%d", cfg.ClusterName, prefix, index)
+		if existing[vmName] {
 			continue
 		}
-		r.inFlightMu.Unlock()
-
-		// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
-		if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
-			zap.S().Debugw("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
-			continue
-		}
-
-		r.inFlightMu.Lock()
-		r.InFlight[vmName] = true
-		r.inFlightMu.Unlock()
-
+		createCount++
 		zap.S().Infow("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
 
 		var pciDevices []proxmox.PCIDevice
@@ -422,8 +376,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			}
 		}
 
-		// Build tags: default "talos" for all VMs, plus "gpu" for GPU workers, plus any config tags
-		tags := "talos"
+		tags := cfg.AutoScalerTag
 		if workerType == "gpu" {
 			tags += ",gpu"
 		}
@@ -431,20 +384,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 			tags += "," + cfg.Tags
 		}
 
-		// Non-blocking: create VM and wait for node in a goroutine
 		go func(vmName string, vmid int, pciDevices []proxmox.PCIDevice) {
-			defer func() {
-				r.inFlightMu.Lock()
-				delete(r.InFlight, vmName)
-				r.inFlightMu.Unlock()
-			}()
-
-			// Pre-flight: skip if VM already exists in Proxmox (prev reconcile created it but node hasn't joined K8s yet)
-			if existingID, err := r.Proxmox.FindVMByName(ctx, vmName); err == nil {
-				zap.S().Debugw("VM already exists in Proxmox, skipping creation", "name", vmName, "vmid", existingID)
-				return
-			}
-
 			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 				Name:          vmName,
 				VMID:          vmid,
@@ -471,11 +411,34 @@ func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size V
 	}
 }
 
-func (r *Reconciler) scaleDown(ctx context.Context, current, desired int32, clusterName, prefix string, baseVMID int) {
-	for i := current; i > desired; i-- {
-		nodeName := fmt.Sprintf("%s-%s-%d", clusterName, prefix, i-1)
-		zap.S().Infow("Removing worker node", "node", nodeName)
-		r.drainAndDelete(ctx, nodeName, clusterName, prefix, baseVMID)
+func (r *Reconciler) scaleDown(ctx context.Context, desired int32, clusterName, prefix string, baseVMID int, owned []proxmox.VM) {
+	sort.Slice(owned, func(i, j int) bool {
+		return vmIndex(owned[i].Name, clusterName, prefix) > vmIndex(owned[j].Name, clusterName, prefix)
+	})
+
+	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		zap.S().Errorw("Failed to list nodes for scale-down", "error", err)
+		return
+	}
+	nodeNames := make(map[string]bool, len(nodeList.Items))
+	for _, n := range nodeList.Items {
+		nodeNames[n.Name] = true
+	}
+
+	need := int32(len(owned)) - desired
+	deleted := int32(0)
+	for _, vm := range owned {
+		if deleted >= need {
+			break
+		}
+		if !nodeNames[vm.Name] {
+			zap.S().Infow("Skipping scale-down, node not registered yet", "vm", vm.Name)
+			continue
+		}
+		zap.S().Infow("Removing worker node", "node", vm.Name)
+		r.drainAndDelete(ctx, vm.Name, clusterName, prefix, baseVMID)
+		deleted++
 	}
 }
 
