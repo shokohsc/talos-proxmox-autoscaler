@@ -93,8 +93,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: autoscaler/
-          push: ${{ github.event_name == 'push' }}
-          load: ${{ github.event_name != 'push' }}
+          push: true
           tags: ${{ github.event_name == 'push' && format('{0}:main,{1}:{2}', env.IMAGE_NAME, env.IMAGE_NAME, steps.vars.outputs.short_sha) || format('{0}:ci-{1}', env.IMAGE_NAME, steps.vars.outputs.short_sha) }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -112,7 +111,7 @@ jobs:
       - uses: anchore/scan-action@v7
         id: grype
         with:
-          image: ${{ env.IMAGE_NAME }}:ci-${{ needs.build.outputs.short_sha }}
+          image: ${{ github.event_name == 'pull_request' && format('{0}:ci-{1}', env.IMAGE_NAME, needs.build.outputs.short_sha) || format('{0}:{1}', env.IMAGE_NAME, needs.build.outputs.short_sha) }}
           severity-cutoff: critical
           fail-build: false
           output-format: sarif
