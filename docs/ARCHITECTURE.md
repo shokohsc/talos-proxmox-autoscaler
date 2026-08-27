@@ -86,6 +86,7 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 │  ├── StopVM                                             │
 │  ├── GetVMStatus                                        │
 │  ├── FindVMByName                                       │
+│  ├── ListVMs (cluster-wide VM list, tag-based)          │
 │  ├── ListNodes (cluster node discovery)                 │
 │  └── GetNode (configured or auto-discovered)            │
 │                                                         │
@@ -98,7 +99,7 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 ```
 
 **VM Provisioning Flow:**
-1. Generate VM config from ConfigMap values (CPU type, CPU count, RAM, disk, network, and tags — all VMs get a default `talos` tag, GPU workers additionally get `gpu`, and ConfigMap tags are appended)
+1. Generate VM config from ConfigMap values (CPU type, CPU count, RAM, disk, network, and tags — all VMs get the `autoscaler_tag` (default `talos`), GPU workers additionally get `gpu`, and ConfigMap `tags` are appended)
 2. If `serial` is set, base64-encode it and append `?base64=1` for the Proxmox `smbios1` parameter
 3. Call Proxmox API to clone from template or create from scratch
 4. Start the VM via API call
@@ -187,6 +188,7 @@ type Config struct {
     Serial        string
     CPUType       string
     Tags          string
+    AutoScalerTag string
     VLANID        int
     WorkerNodes   []WorkerNodeConfig
     GPUNodes      []GPUNodeConfig
@@ -305,6 +307,7 @@ Service CIDR: 10.96.0.0/12
 - **Workers**: scaled dynamically based on unschedulable pod resource requests, always maintain at least `min_workers` nodes
 - **Node drain**: uses standard Kubernetes grace period (30s default)
 - **Proxmox HA**: VMs marked with Proxmox HA group for automatic restart on node failure
+- **Stateless replicas** — 2+ concurrent pods reconcile every 30s with no leader election; ownership counts come from the Proxmox VM tag list so all replicas agree
 
 ## Failure Modes
 

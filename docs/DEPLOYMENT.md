@@ -135,11 +135,16 @@ SERVICE_CIDR="10.96.0.0/12"
    - `/vms` — `PVEVMAdmin` (create, start, stop, delete VMs)
    - `/storage` — `PVEStorageAdmin` (only for VM disk storage)
    - `/nodes` — `PVEAuditor` (read-only node info)
+   - `/vm` — `PVEAudit` (required so `ListVMs` returns guests with their tags)
 
 ```bash
 # Test the token
 curl -s -H "Authorization: PVEAPIToken=autoscaler@pve!autoscaler=${PROXMOX_API_TOKEN_SECRET}" \
   "https://10.0.1.10:8006/api2/json/nodes" | jq '.data[].node'
+
+# ListVMs probe (requires Audit on /vm/)
+curl -s -H "Authorization: PVEAPIToken=autoscaler@pve!autoscaler=${PROXMOX_API_TOKEN_SECRET}" \
+  "https://10.0.1.10:8006/api2/json/cluster/resources?type=vm" | jq '.data[].name'
 ```
 
 ## Step 5: Create Secrets as Mounted Files (Not Env Vars)
@@ -208,7 +213,7 @@ data:
   # serial: "worker-standard-001"
   # cpu_type: "host"
 
-  # Optional: additional tags appended to provisioned VMs (all VMs get default "talos", GPU VMs also get "gpu")
+  # Optional: extra tags appended to provisioned VMs (all VMs get autoscaler_tag, GPU VMs also get "gpu")
   tags: "autoscaler,worker"
 
   # Optional: VLAN tag for primary network interface
@@ -216,6 +221,9 @@ data:
 
   # Scaling
   cluster_name: "k8s"
+
+  # Ownership tag for VMs this autoscaler manages (default "talos")
+  autoscaler_tag: "talos"
   min_workers: "1"
   max_workers: "20"
 

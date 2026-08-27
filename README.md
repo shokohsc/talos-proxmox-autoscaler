@@ -37,7 +37,9 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 - **ConfigMap-based config** — all VM specs, cluster settings, and scaling parameters live in a single `autoscaler-config` ConfigMap (no CRDs)
 - **Dual auth** — supports both Proxmox API token and username/password authentication (auto-detected from secret fields)
 - **Node auto-discovery** — automatically selects an available cluster node if `proxmox_node` is not configured
-- **VM tags** — every VM gets a `talos` tag; GPU workers additionally get `gpu`; ConfigMap `tags` field appended
+- **Tag-based ownership** — every VM gets the configurable `autoscaler_tag` (default `talos`); GPU workers additionally get `gpu`; ConfigMap `tags` field appended. Scale decisions derive from the Proxmox VM list, not pod memory, so replicas are stateless
+- **Stateless HA** — concurrent + idempotent: run multiple replicas (`replicas: 2`); all decode from the same ConfigMap and Proxmox truth, so racing duplicate creates/deletes log harmlessly and converge next tick
+- **Hot config reload** — ConfigMap changes are detected (hash) and applied to future scale decisions within 30s
 - **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
 ## Project Structure
@@ -127,6 +129,7 @@ metadata:
   namespace: autoscaler-system
 data:
   cluster_name: "talos"          # Talos cluster name
+  autoscaler_tag: "talos"          # Ownership tag for VMs this autoscaler manages
   min_workers: "1"               # Minimum worker nodes per type
   max_workers: "20"              # Maximum worker nodes per type
   min_cpu: "2"                   # Minimum CPUs per worker VM
@@ -139,7 +142,7 @@ data:
   proxmox_api_url: "https://pve.example.com:8006"  # Proxmox API endpoint
   base_vmid: "2000"              # Starting VMID for regular workers
   base_gpu_vmid: "3000"          # Starting VMID for GPU workers
-  tags: "autoscaler,worker"      # Tags applied to provisioned VMs
+  tags: "autoscaler,worker"      # Extra tags appended to provisioned VMs
   vlan_id: "0"                   # VLAN tag for primary interface (0 = no tag)
   cpu_type: "host"               # VM CPU type (default: "host")
 
@@ -151,6 +154,11 @@ data:
 ```
 
 Optional fields: `mac_address`, `serial`, `cpu_type`, `proxmox_insecure`, `proxmox_node` (auto-discovers if omitted). See the full `kubernetes/configmap.yaml` for all keys.
+
+### Ownership Tag Caveats
+
+- `autoscaler_tag` applies to future VMs only — changing it orphans existing VMs (re-tag manually), and every autoscaler pointed at the same Proxmox must use a distinct tag.
+- The Proxmox API token needs the `Audit` privilege on `/vm/` for `ListVMs` to see guest tags.
 
 ### Verify
 
