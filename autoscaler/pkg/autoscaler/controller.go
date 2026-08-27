@@ -49,6 +49,7 @@ type Config struct {
 	Serial        string
 	CPUType       string
 	Tags          string
+	AutoScalerTag string
 	VLANID        int
 
 	GPUNodes []GPUNodeConfig
@@ -62,6 +63,7 @@ type Reconciler struct {
 	BaseGPUVMID  int
 	WorkerPrefix string // e.g. "worker-vm"
 	GPUPrefix    string // e.g. "worker-vm-gpu"
+	configHash   string
 
 	// ponytail: in-flight VMs tracked by name, prevents duplicate creation
 	// when reconcile fires before previous VMs join the cluster
@@ -167,8 +169,19 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 	}
 	d := cm.Data
 
+	tag := d["autoscaler_tag"]
+	if tag == "" {
+		tag = "talos"
+	}
+
+	if h := configHash(d); h != r.configHash {
+		r.configHash = h
+		zap.S().Infow("Config reloaded", "cluster", d["cluster_name"])
+	}
+
 	config := &Config{
 		ClusterName:   d["cluster_name"],
+		AutoScalerTag: tag,
 		MinWorkers:    int32(clampInt(atoiDefault(d["min_workers"], 1), 0, 100)),
 		MaxWorkers:    int32(clampInt(atoiDefault(d["max_workers"], 10), 1, 100)),
 		MinCPU:        clampInt(atoiDefault(d["min_cpu"], 2), 1, 128),
@@ -518,6 +531,12 @@ func clampInt(v, min, max int) int {
 		return max
 	}
 	return v
+}
+
+// configHash is stable across map iteration order: encoding/json sorts keys.
+func configHash(data map[string]string) string {
+	b, _ := json.Marshal(data)
+	return string(b)
 }
 
 func atoiDefault(s string, defaultVal int) int {

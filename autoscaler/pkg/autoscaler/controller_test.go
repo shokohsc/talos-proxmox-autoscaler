@@ -906,3 +906,57 @@ func newMockProxmoxServerBatch(t *testing.T, deletedVMIDs *[]int) *httptest.Serv
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 }
+
+func TestReadConfigAutoScalerTag(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name":   "test",
+			"autoscaler_tag": "mycluster",
+		},
+	}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "mycluster", cfg.AutoScalerTag)
+}
+
+func TestReadConfigAutoScalerTagDefault(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data:       map[string]string{"cluster_name": "test"},
+	}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	cfg, err := r.readConfig(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "talos", cfg.AutoScalerTag)
+}
+
+func TestConfigHashStable(t *testing.T) {
+	a := configHash(map[string]string{"b": "2", "a": "1"})
+	b := configHash(map[string]string{"a": "1", "b": "2"})
+	assert.Equal(t, a, b)
+	assert.NotEqual(t, a, configHash(map[string]string{"a": "1"}))
+}
+
+func TestConfigReloadDetected(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data:       map[string]string{"cluster_name": "test", "min_workers": "1"},
+	}
+	client := fake.NewSimpleClientset(cm)
+	r := &Reconciler{KubeClient: client, Namespace: "autoscaler-system"}
+	ctx := context.Background()
+
+	_, err := r.readConfig(ctx)
+	require.NoError(t, err)
+	firstHash := r.configHash
+
+	cm.Data["min_workers"] = "2"
+	_, err = client.CoreV1().ConfigMaps("autoscaler-system").Update(ctx, cm, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	_, err = r.readConfig(ctx)
+	require.NoError(t, err)
+	assert.NotEqual(t, firstHash, r.configHash)
+}
