@@ -330,6 +330,55 @@ func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string)
 	return evictable, nil
 }
 
+func hasTag(tags, target string) bool {
+	for _, t := range strings.FieldsFunc(tags, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' '
+	}) {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+func vmMatchesPrefix(name, clusterName, prefix string) bool {
+	fullPrefix := clusterName + "-" + prefix + "-"
+	if !strings.HasPrefix(name, fullPrefix) {
+		return false
+	}
+	idx := len(fullPrefix)
+	return idx == len(name) || (name[idx] >= '0' && name[idx] <= '9')
+}
+
+func vmIndex(name, clusterName, prefix string) int {
+	suffix, ok := strings.CutPrefix(name, clusterName+"-"+prefix+"-")
+	if !ok {
+		return -1
+	}
+	var idx int
+	if _, err := fmt.Sscanf(suffix, "%d", &idx); err != nil {
+		return -1
+	}
+	return idx
+}
+
+func filterOwned(vms []proxmox.VM, clusterName, prefix, autoscalerTag string, gpu bool) []proxmox.VM {
+	var owned []proxmox.VM
+	for _, vm := range vms {
+		if vm.Template == 1 {
+			continue
+		}
+		if !hasTag(vm.Tags, autoscalerTag) || !vmMatchesPrefix(vm.Name, clusterName, prefix) {
+			continue
+		}
+		if hasTag(vm.Tags, "gpu") != gpu {
+			continue
+		}
+		owned = append(owned, vm)
+	}
+	return owned
+}
+
 func (r *Reconciler) scaleUp(ctx context.Context, current, desired int32, size VMSize, cfg *Config, workerType string) {
 	prefix := r.WorkerPrefix
 	baseVMID := r.BaseVMID

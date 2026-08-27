@@ -960,3 +960,40 @@ func TestConfigReloadDetected(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, firstHash, r.configHash)
 }
+
+func TestHasTag(t *testing.T) {
+	assert.True(t, hasTag("talos,gpu,worker", "gpu"))
+	assert.True(t, hasTag("talos;gpu;worker", "gpu"))
+	assert.True(t, hasTag("talos, gpu", "gpu"))
+	assert.True(t, hasTag("gpu", "gpu"))
+	assert.False(t, hasTag("talos,worker", "gpu"))
+	assert.False(t, hasTag("talosgpu", "gpu")) // no substring false positives
+	assert.False(t, hasTag("", "talos"))
+}
+
+func TestVMIndex(t *testing.T) {
+	assert.Equal(t, 0, vmIndex("test-worker-vm-0", "test", "worker-vm"))
+	assert.Equal(t, 7, vmIndex("test-worker-vm-7", "test", "worker-vm"))
+	assert.Equal(t, -1, vmIndex("test-worker-vm-gpu-0", "test", "worker-vm"))
+	assert.Equal(t, -1, vmIndex("other-vm-0", "test", "worker-vm"))
+	assert.Equal(t, -1, vmIndex("test-worker-vm-x", "test", "worker-vm"))
+}
+
+func TestFilterOwned(t *testing.T) {
+	vms := []proxmox.VM{
+		{VMID: 2000, Name: "test-worker-vm-0", Tags: "talos,worker"},
+		{VMID: 2001, Name: "test-worker-vm-1", Tags: "talos;gpu"},
+		{VMID: 3000, Name: "test-worker-vm-gpu-0", Tags: "talos,gpu"},
+		{VMID: 2100, Name: "test-worker-vm-2", Tags: "talos", Template: 1},
+		{VMID: 2500, Name: "test-worker-vm-3", Tags: "other"},
+		{VMID: 2600, Name: "other-worker-vm-0", Tags: "talos"},
+	}
+
+	regular := filterOwned(vms, "test", "worker-vm", "talos", false)
+	gpu := filterOwned(vms, "test", "worker-vm-gpu", "talos", true)
+
+	assert.Len(t, regular, 1)
+	assert.Equal(t, 2000, regular[0].VMID)
+	assert.Len(t, gpu, 1)
+	assert.Equal(t, 3000, gpu[0].VMID)
+}
