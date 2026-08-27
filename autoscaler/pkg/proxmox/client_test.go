@@ -642,7 +642,7 @@ func TestDeleteVM(t *testing.T) {
 	assert.NoError(t, err)
 	// DeleteVM calls StopVM (POST), then sleeps 3s, then DELETE
 	assert.Len(t, methods, 2)
-	assert.Equal(t, "POST", methods[0]) // stop
+	assert.Equal(t, "POST", methods[0])   // stop
 	assert.Equal(t, "DELETE", methods[1]) // delete
 	assert.Contains(t, paths[0], "/status/stop")
 	assert.Contains(t, paths[1], "/qemu/300")
