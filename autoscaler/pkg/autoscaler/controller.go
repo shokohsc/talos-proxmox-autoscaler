@@ -103,9 +103,13 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		zap.S().Infow("Removing descheduler-evicted node", "node", node.Name)
 		// Detect type from name prefix to get correct base VMID
 		if strings.HasPrefix(node.Name, cfg.ClusterName+"-"+r.GPUPrefix+"-") {
-			r.drainAndDelete(ctx, node.Name, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID)
+			if vmid, ok := deriveVMID(node.Name, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID); ok {
+				r.drainAndDelete(ctx, node.Name, vmid)
+			}
 		} else {
-			r.drainAndDelete(ctx, node.Name, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID)
+			if vmid, ok := deriveVMID(node.Name, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID); ok {
+				r.drainAndDelete(ctx, node.Name, vmid)
+			}
 		}
 	}
 
@@ -200,6 +204,10 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 
 	if config.ClusterName == "" {
 		return nil, fmt.Errorf("cluster_name is required")
+	}
+
+	if config.AutoScalerTag == "gpu" {
+		return nil, fmt.Errorf("autoscaler_tag cannot be \"gpu\", it is reserved for GPU worker detection")
 	}
 
 	return config, nil
@@ -437,29 +445,29 @@ func (r *Reconciler) scaleDown(ctx context.Context, desired int32, clusterName, 
 			continue
 		}
 		zap.S().Infow("Removing worker node", "node", vm.Name)
-		r.drainAndDelete(ctx, vm.Name, clusterName, prefix, baseVMID)
+		r.drainAndDelete(ctx, vm.Name, vm.VMID)
 		deleted++
 	}
 }
 
-func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName, clusterName, prefix string, baseVMID int) {
+func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid int) {
 	r.drainNode(ctx, nodeName)
-
-	// ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
-	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-"+prefix+"-")
-	if !ok {
-		zap.S().Errorw("Failed to parse VM index", "error", fmt.Errorf("unexpected node name format: %s", nodeName))
-		return
-	}
-	var vmIndex int
-	if _, err := fmt.Sscanf(suffix, "%d", &vmIndex); err != nil {
-		zap.S().Errorw("Failed to parse VM index", "error", err, "node", nodeName)
-		return
-	}
-	vmid := baseVMID + vmIndex
 	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 		zap.S().Errorw("Failed to delete VM", "error", err, "vmid", vmid)
 	}
+}
+
+// ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
+func deriveVMID(nodeName, clusterName, prefix string, baseVMID int) (int, bool) {
+	suffix, ok := strings.CutPrefix(nodeName, clusterName+"-"+prefix+"-")
+	if !ok {
+		return 0, false
+	}
+	var vmIndex int
+	if _, err := fmt.Sscanf(suffix, "%d", &vmIndex); err != nil {
+		return 0, false
+	}
+	return baseVMID + vmIndex, true
 }
 
 func (r *Reconciler) drainNode(ctx context.Context, nodeName string) {

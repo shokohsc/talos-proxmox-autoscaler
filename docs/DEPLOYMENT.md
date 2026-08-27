@@ -281,6 +281,12 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/descheduler/m
 
 If the descheduler is not deployed, no automatic scale-down will occur — workers will only be added, never removed.
 
+### Stuck / permanently-unregistered VMs
+
+Before scale-down deletes a worker, it skips any VM whose node has **not** joined the Kubernetes cluster (it waits for the node to finish provisioning first). If a provisioned VM never joins the cluster, this guard protects it forever: it can never be scale-down-deleted, still counts toward `autoscaler_nodes_total` / worker capacity indefinitely, and must be removed manually.
+
+To recover, delete the VM manually (for example `qm destroy <vmid>` on the Proxmox host) and, if it created a stale Kubernetes `Node` object, delete that too (`kubectl delete node <name>`). Until you do, it will keep counting toward current worker capacity and may block future scale-ups.
+
 ## Step 9: Build and Deploy the Autoscaler
 
 ```bash

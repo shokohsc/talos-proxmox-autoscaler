@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -439,7 +440,7 @@ func TestDrainAndDelete(t *testing.T) {
 		GPUPrefix:    "worker-vm-gpu",
 	}
 
-	r.drainAndDelete(context.Background(), "test-cluster-worker-vm-0", "test-cluster", "worker-vm", 1000)
+	r.drainAndDelete(context.Background(), "test-cluster-worker-vm-0", 1000)
 
 	assert.Equal(t, 1000, deletedVMID)
 	updatedNode, err := kubeClient.CoreV1().Nodes().Get(context.Background(), "test-cluster-worker-vm-0", metav1.GetOptions{})
@@ -450,6 +451,7 @@ func TestDrainAndDelete(t *testing.T) {
 func TestScaleUp(t *testing.T) {
 	var createdVMCount atomic.Int32
 	var tagValues []string
+	var tagMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -469,7 +471,9 @@ func TestScaleUp(t *testing.T) {
 			_ = r.ParseForm()
 			if r.FormValue("vmid") != "" {
 				createdVMCount.Add(1)
+				tagMu.Lock()
 				tagValues = append(tagValues, r.FormValue("tags"))
+				tagMu.Unlock()
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -518,6 +522,8 @@ func TestScaleUp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	assert.Equal(t, int32(3), createdVMCount.Load())
+	tagMu.Lock()
+	defer tagMu.Unlock()
 	require.Len(t, tagValues, 3)
 	for _, tv := range tagValues {
 		assert.Equal(t, "talos", tv)
@@ -527,6 +533,7 @@ func TestScaleUp(t *testing.T) {
 func TestScaleUp_GPU(t *testing.T) {
 	var createdVMCount atomic.Int32
 	var tagValues []string
+	var tagMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -546,7 +553,9 @@ func TestScaleUp_GPU(t *testing.T) {
 			_ = r.ParseForm()
 			if r.FormValue("vmid") != "" {
 				createdVMCount.Add(1)
+				tagMu.Lock()
 				tagValues = append(tagValues, r.FormValue("tags"))
+				tagMu.Unlock()
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -596,6 +605,8 @@ func TestScaleUp_GPU(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	assert.Equal(t, int32(2), createdVMCount.Load())
+	tagMu.Lock()
+	defer tagMu.Unlock()
 	require.Len(t, tagValues, 2)
 	assert.Equal(t, "talos,gpu", tagValues[0])
 }
@@ -744,6 +755,7 @@ func TestReconcile_ScaleUp(t *testing.T) {
 
 	var createdVMCount atomic.Int32
 	var tagValues []string
+	var tagMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/cluster/resources" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{}})
@@ -769,7 +781,9 @@ func TestReconcile_ScaleUp(t *testing.T) {
 			_ = r.ParseForm()
 			if r.FormValue("vmid") != "" {
 				createdVMCount.Add(1)
+				tagMu.Lock()
 				tagValues = append(tagValues, r.FormValue("tags"))
+				tagMu.Unlock()
 			}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
@@ -810,6 +824,8 @@ func TestReconcile_ScaleUp(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	assert.GreaterOrEqual(t, int(createdVMCount.Load()), 1)
+	tagMu.Lock()
+	defer tagMu.Unlock()
 	require.NotEmpty(t, tagValues)
 	assert.Equal(t, "talos", tagValues[0])
 }
@@ -1045,6 +1061,19 @@ func TestReadConfigAutoScalerTag(t *testing.T) {
 	cfg, err := r.readConfig(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "mycluster", cfg.AutoScalerTag)
+}
+
+func TestReadConfigRejectsGPUTag(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name":   "test",
+			"autoscaler_tag": "gpu",
+		},
+	}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(cm), Namespace: "autoscaler-system"}
+	_, err := r.readConfig(context.Background())
+	require.Error(t, err)
 }
 
 func TestReadConfigAutoScalerTagDefault(t *testing.T) {
