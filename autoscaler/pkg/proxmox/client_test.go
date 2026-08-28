@@ -283,6 +283,45 @@ func TestResolveNode(t *testing.T) {
 	assert.Equal(t, "/api2/json/nodes/pve1/qemu/100/status/start", gotPath)
 }
 
+func TestPasswordAuth_ReloginOn401(t *testing.T) {
+	loginCount := 0
+	apiCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api2/json/access/ticket":
+			loginCount++
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{
+					"ticket":              "PVEticket",
+					"CSRFPreventionToken": "csrf",
+				},
+			})
+		default:
+			apiCount++
+			// First API call uses the cached (stale) ticket -> reject.
+			if apiCount == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"data":null}`))
+				return
+			}
+			assert.Equal(t, "PVEAuthCookie=PVEticket", r.Header.Get("Cookie"))
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": json.RawMessage(`"ok"`),
+			})
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "root@pam", "pass", "", "", "pve", true)
+	require.NoError(t, err)
+	c.ticket = "PVEexpired" // simulate a ticket that has since expired
+	c.csrfToken = "csrf"
+
+	_, err = c.do(context.Background(), "GET", "/api2/json/version", nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, loginCount) // only the re-login after the stale-ticket 401
+}
+
 func TestPasswordAuth_CachesTicket(t *testing.T) {
 	loginCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

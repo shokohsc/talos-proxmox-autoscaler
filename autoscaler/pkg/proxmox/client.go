@@ -169,12 +169,34 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
-
 	respBody, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
+
+	// A 401 on a cached password-auth ticket means the ticket expired or was
+	// invalidated (Proxmox allows one ticket per user/IP; another login kills it).
+	// Re-login once and retry instead of failing forever on a stale cookie.
+	if resp.StatusCode == http.StatusUnauthorized && c.authType == AuthPassword {
+		c.ticket = ""
+		if err := c.login(); err != nil {
+			return nil, err
+		}
+		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
+		req.Header.Set("CSRFPreventionToken", c.csrfToken)
+		resp2, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+		respBody, err = io.ReadAll(resp2.Body)
+		_ = resp2.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read response: %w", err)
+		}
+		zap.S().Debugw("API call (retry)", "method", method, "url", req.URL.RequestURI(), "status", resp2.StatusCode)
+		resp = resp2
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
