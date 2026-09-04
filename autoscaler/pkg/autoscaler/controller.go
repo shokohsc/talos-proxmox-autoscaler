@@ -92,10 +92,12 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	zap.S().Debugw("Config loaded", "cluster", cfg.ClusterName, "min_workers", cfg.MinWorkers, "max_workers", cfg.MaxWorkers)
 
-	evicted, err := r.findEvictableNodes(ctx, cfg.ClusterName)
+	k8sNodes, err := r.listK8sNodes(ctx)
 	if err != nil {
 		return err
 	}
+
+	evicted := r.findEvictableNodes(k8sNodes, cfg.ClusterName)
 	if len(evicted) > 0 {
 		zap.S().Infow("Found evictable nodes", "count", len(evicted))
 	}
@@ -125,8 +127,12 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	ownedRegular := filterOwned(vms, cfg.ClusterName, r.WorkerPrefix, cfg.AutoScalerTag, false)
 	ownedGPU := filterOwned(vms, cfg.ClusterName, r.GPUPrefix, cfg.AutoScalerTag, true)
-	currentWorkers := int32(len(ownedRegular))
-	currentGPUWorkers := int32(len(ownedGPU))
+
+	// Use Kubernetes node count as the source of truth for current workers.
+	// Proxmox VMs may exist before the node has joined the cluster, so counting
+	// VMs would inflate the worker count and prevent necessary scale-ups.
+	currentWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.WorkerPrefix)
+	currentGPUWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.GPUPrefix)
 
 	workersNeeded, vmSize := r.calculateNeeded(pendingCPU, pendingMem, unschedulableCount, cfg)
 	workersNeeded = clamp(workersNeeded, cfg.MinWorkers, cfg.MaxWorkers)
@@ -141,7 +147,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		if gpuWorkersNeeded > currentGPUWorkers {
 			zap.S().Infow("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
 			r.scaleUp(ctx, gpuWorkersNeeded, gpuVMSize, cfg, "gpu", ownedGPU)
-		} else if gpuWorkersNeeded < currentGPUWorkers && unschedulableCount == 0 {
+		} else if gpuWorkersNeeded < currentGPUWorkers && int32(len(ownedGPU)) > gpuWorkersNeeded && unschedulableCount == 0 {
 			zap.S().Infow("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
 			r.scaleDown(ctx, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID, ownedGPU)
 		}
@@ -152,7 +158,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	if workersNeeded > currentWorkers {
 		zap.S().Infow("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
 		r.scaleUp(ctx, workersNeeded, vmSize, cfg, "vm", ownedRegular)
-	} else if workersNeeded < currentWorkers && unschedulableCount == 0 {
+	} else if workersNeeded < currentWorkers && int32(len(ownedRegular)) > workersNeeded && unschedulableCount == 0 {
 		zap.S().Infow("Scaling down", "current", currentWorkers, "desired", workersNeeded)
 		r.scaleDown(ctx, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID, ownedRegular)
 	}
@@ -277,15 +283,18 @@ func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, p
 	return needed, size
 }
 
-func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string) ([]corev1.Node, error) {
+func (r *Reconciler) listK8sNodes(ctx context.Context) ([]corev1.Node, error) {
 	nodeList, err := r.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
+	return nodeList.Items, nil
+}
+
+func (r *Reconciler) findEvictableNodes(nodes []corev1.Node, clusterName string) []corev1.Node {
 	var evictable []corev1.Node
-	// Check both standard and GPU worker prefixes
 	prefixes := []string{r.WorkerPrefix, r.GPUPrefix}
-	for _, node := range nodeList.Items {
+	for _, node := range nodes {
 		for _, prefix := range prefixes {
 			fullPrefix := clusterName + "-" + prefix + "-"
 			if strings.HasPrefix(node.Name, fullPrefix) && labels.Set(node.Labels).Has(deschedulerLabel) {
@@ -294,7 +303,22 @@ func (r *Reconciler) findEvictableNodes(ctx context.Context, clusterName string)
 			}
 		}
 	}
-	return evictable, nil
+	return evictable
+}
+
+// countK8sNodes returns the number of Kubernetes nodes whose name starts with
+// the given prefix. This is the source of truth for how many workers have
+// actually joined the cluster, as opposed to Proxmox VMs that may still be
+// booting.
+func countK8sNodes(nodeList []corev1.Node, clusterName, prefix string) int32 {
+	fullPrefix := clusterName + "-" + prefix + "-"
+	var count int32
+	for _, n := range nodeList {
+		if strings.HasPrefix(n.Name, fullPrefix) {
+			count++
+		}
+	}
+	return count
 }
 
 func hasTag(tags, target string) bool {

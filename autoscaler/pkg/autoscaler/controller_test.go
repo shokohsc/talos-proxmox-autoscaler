@@ -368,9 +368,8 @@ func TestFindEvictableNodes(t *testing.T) {
 		},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
-	evictable, err := r.findEvictableNodes(context.Background(), "test-cluster")
-	require.NoError(t, err)
+	r := &Reconciler{WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	evictable := r.findEvictableNodes(nodes, "test-cluster")
 	assert.Len(t, evictable, 2)
 	assert.Equal(t, "test-cluster-worker-vm-0", evictable[0].Name)
 	assert.Equal(t, "test-cluster-worker-vm-gpu-0", evictable[1].Name)
@@ -381,9 +380,8 @@ func TestFindEvictableNodes_None(t *testing.T) {
 		{ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-worker-vm-0", Labels: map[string]string{}}},
 	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(&corev1.NodeList{Items: nodes}), WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
-	evictable, err := r.findEvictableNodes(context.Background(), "test-cluster")
-	require.NoError(t, err)
+	r := &Reconciler{WorkerPrefix: "worker-vm", GPUPrefix: "worker-vm-gpu"}
+	evictable := r.findEvictableNodes(nodes, "test-cluster")
 	assert.Empty(t, evictable)
 }
 
@@ -899,6 +897,11 @@ func TestReconcile_NoAction(t *testing.T) {
 		},
 	}
 
+	nodes := []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
+	}
+
 	vms := []map[string]interface{}{
 		vmRes(1000, "test-worker-vm-0", "talos", 0),
 		vmRes(1001, "test-worker-vm-1", "talos", 0),
@@ -923,7 +926,7 @@ func TestReconcile_NoAction(t *testing.T) {
 	require.NoError(t, err)
 
 	r := &Reconciler{
-		KubeClient:   fake.NewSimpleClientset(cm),
+		KubeClient:   fake.NewSimpleClientset(cm, &corev1.NodeList{Items: nodes}),
 		Proxmox:      proxmoxClient,
 		BaseVMID:     1000,
 		Namespace:    "autoscaler-system",
@@ -1124,6 +1127,20 @@ func TestHasTag(t *testing.T) {
 	assert.False(t, hasTag("talos,worker", "gpu"))
 	assert.False(t, hasTag("talosgpu", "gpu")) // no substring false positives
 	assert.False(t, hasTag("", "talos"))
+}
+
+func TestCountK8sNodes(t *testing.T) {
+	nodes := []corev1.Node{
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-gpu-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "other-worker-vm-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "control-plane-0"}},
+	}
+
+	assert.Equal(t, int32(2), countK8sNodes(nodes, "test", "worker-vm"))
+	assert.Equal(t, int32(1), countK8sNodes(nodes, "test", "worker-vm-gpu"))
+	assert.Equal(t, int32(0), countK8sNodes(nodes, "test", "nonexistent"))
 }
 
 func TestVMIndex(t *testing.T) {
