@@ -1133,13 +1133,13 @@ func TestCountK8sNodes(t *testing.T) {
 	nodes := []corev1.Node{
 		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-0"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "test-worker-vm-gpu-0"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "test-gpu-vm-0"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "other-worker-vm-0"}},
 		{ObjectMeta: metav1.ObjectMeta{Name: "control-plane-0"}},
 	}
 
 	assert.Equal(t, int32(2), countK8sNodes(nodes, "test", "worker-vm"))
-	assert.Equal(t, int32(1), countK8sNodes(nodes, "test", "worker-vm-gpu"))
+	assert.Equal(t, int32(1), countK8sNodes(nodes, "test", "gpu-vm"))
 	assert.Equal(t, int32(0), countK8sNodes(nodes, "test", "nonexistent"))
 }
 
