@@ -225,6 +225,12 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 		return resource.Quantity{}, resource.Quantity{}, 0, 0, err
 	}
 
+	// FailedScheduling events tell us WHY pods are unschedulable. Only pods
+	// blocked by insufficient resources should contribute to scaling decisions;
+	// pods stuck on taints, selectors, PVCs, affinity, etc. cannot be helped by
+	// adding workers.
+	failures := r.latestSchedulingFailures(ctx)
+
 	var totalCPU, totalMem resource.Quantity
 	count := 0
 	gpuCount := 0
@@ -234,6 +240,9 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 		}
 		for _, cond := range pod.Status.Conditions {
 			if cond.Type == corev1.PodScheduled && cond.Reason == "Unschedulable" {
+				if !isResourceBlocked(failures[pod.Namespace+"/"+pod.Name]) {
+					break
+				}
 				count++
 				for _, c := range pod.Spec.Containers {
 					if cpu := c.Resources.Requests.Cpu(); cpu != nil {
@@ -252,6 +261,43 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 		}
 	}
 	return totalCPU, totalMem, gpuCount, count, nil
+}
+
+// latestSchedulingFailures returns the most recent FailedScheduling event
+// message per pod, keyed by "namespace/name".
+func (r *Reconciler) latestSchedulingFailures(ctx context.Context) map[string]string {
+	events, err := r.KubeClient.CoreV1().Events("").List(ctx, metav1.ListOptions{
+		FieldSelector: "reason=FailedScheduling",
+	})
+	if err != nil {
+		return nil
+	}
+	latest := make(map[string]string)
+	latestTs := make(map[string]time.Time)
+	for _, e := range events.Items {
+		if e.InvolvedObject.Kind != "Pod" || e.Reason != "FailedScheduling" {
+			continue
+		}
+		key := e.InvolvedObject.Namespace + "/" + e.InvolvedObject.Name
+		ts := e.LastTimestamp.Time
+		if ts.IsZero() {
+			ts = e.FirstTimestamp.Time
+		}
+		if prev, ok := latestTs[key]; ok && !ts.After(prev) {
+			continue
+		}
+		latestTs[key] = ts
+		latest[key] = e.Message
+	}
+	return latest
+}
+
+// isResourceBlocked reports whether a FailedScheduling message indicates the
+// pod could not be placed due to insufficient resources — "Insufficient cpu",
+// "Insufficient memory", "Insufficient nvidia.com/gpu", ... — rather than
+// taints, selectors, PVCs, affinity, or other reasons.
+func isResourceBlocked(msg string) bool {
+	return strings.Contains(msg, "Insufficient")
 }
 
 func (r *Reconciler) calculateNeeded(pendingCPU, pendingMem resource.Quantity, pendingPods int, cfg *Config) (int32, VMSize) {

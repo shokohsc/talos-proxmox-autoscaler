@@ -288,8 +288,51 @@ func TestAggregatePending(t *testing.T) {
 			},
 		},
 	}
+	// Unschedulable but NOT blocked by resources: taint, unbound PVC, no event.
+	taintBlocked := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod4", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")},
+			}}},
+		},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue}},
+		},
+	}
+	pvcBlocked := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod5", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("8")},
+			}}},
+		},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue}},
+		},
+	}
+	noEvent := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod6", Namespace: "default"},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("8")},
+			}}},
+		},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue}},
+		},
+	}
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(pendingUnschedulable, runningPod, pendingScheduled)}
+	events := []*corev1.Event{
+		failedSchedulingEvent("pod1", "default", "0/3 nodes are available: 1 Insufficient cpu."),
+		failedSchedulingEvent("pod4", "default", "0/3 nodes are available: 2 node(s) had untolerated taint."),
+		failedSchedulingEvent("pod5", "default", "0/3 nodes are available: 1 pod has unbound PersistentVolumeClaims."),
+	}
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(pendingUnschedulable, runningPod, pendingScheduled, taintBlocked, pvcBlocked, noEvent, events[0], events[1], events[2])}
 	cpu, mem, gpu, count, err := r.aggregatePending(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
@@ -322,8 +365,9 @@ func TestAggregatePending_WithGPU(t *testing.T) {
 			},
 		},
 	}
+	ev := failedSchedulingEvent("gpu-pod", "default", "0/3 nodes are available: 1 Insufficient nvidia.com/gpu.")
 
-	r := &Reconciler{KubeClient: fake.NewSimpleClientset(gpuPod)}
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(gpuPod, ev)}
 	cpu, mem, gpu, count, err := r.aggregatePending(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
@@ -800,7 +844,7 @@ func TestReconcile_ScaleUp(t *testing.T) {
 	}
 
 	r := &Reconciler{
-		KubeClient:   fake.NewSimpleClientset(cm, pendingPod, readyNode),
+		KubeClient:   fake.NewSimpleClientset(cm, pendingPod, readyNode, failedSchedulingEvent("pending-pod", "default", "0/3 nodes are available: 1 Insufficient cpu.")),
 		Proxmox:      proxmoxClient,
 		BaseVMID:     1000,
 		Namespace:    "autoscaler-system",
@@ -939,6 +983,16 @@ func TestReconcile_NoAction(t *testing.T) {
 }
 
 // --- helpers ---
+
+func failedSchedulingEvent(name, namespace, message string) *corev1.Event {
+	return &corev1.Event{
+		ObjectMeta:     metav1.ObjectMeta{Name: name + ".fail", Namespace: namespace},
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: name, Namespace: namespace},
+		Reason:         "FailedScheduling",
+		Message:        message,
+		LastTimestamp:  metav1.Now(),
+	}
+}
 
 func newTestProxmoxClient(baseURL string) (*proxmox.Client, error) {
 	return proxmox.NewClient(baseURL, "", "", "user@realm!tok", "secret", "pve", true)
