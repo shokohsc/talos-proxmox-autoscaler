@@ -653,6 +653,90 @@ func TestScaleUp_GPU(t *testing.T) {
 	assert.Equal(t, "talos,gpu", tagValues[0])
 }
 
+func TestScaleUp_SpreadsAcrossNodes(t *testing.T) {
+	var createdVMCount atomic.Int32
+	var createdNodes []string
+	var nodeMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"node": "pve1", "status": "online"},
+					{"node": "pve2", "status": "online"},
+				},
+			})
+			return
+		}
+		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"name": "eth0", "ip-addresses": []map[string]interface{}{
+						{"ip-address": "10.0.0.5", "ip-address-type": "ipv4"},
+					}},
+				},
+			})
+			return
+		}
+		if r.Method == "POST" {
+			_ = r.ParseForm()
+			if r.FormValue("vmid") != "" {
+				createdVMCount.Add(1)
+				parts := strings.Split(r.URL.Path, "/")
+				nodeMu.Lock()
+				createdNodes = append(createdNodes, parts[4])
+				nodeMu.Unlock()
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	readyNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "ready-node"},
+		Status: corev1.NodeStatus{
+			Addresses:  []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.0.5"}},
+			Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+		},
+	}
+
+	r := &Reconciler{
+		KubeClient:   fake.NewSimpleClientset(readyNode),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+
+	cfg := &Config{
+		ClusterName:   "test",
+		AutoScalerTag: "talos",
+		DiskGiB:       50,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", nil)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if int(createdVMCount.Load()) >= 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assert.Equal(t, int32(2), createdVMCount.Load())
+	nodeMu.Lock()
+	assert.ElementsMatch(t, []string{"pve1", "pve2"}, createdNodes)
+	nodeMu.Unlock()
+}
+
 func TestScaleDown(t *testing.T) {
 	var deletedVMIDs []int
 	srv := newMockProxmoxServerBatch(t, &deletedVMIDs)

@@ -45,6 +45,7 @@ type PCIDevice struct {
 
 type VMConfig struct {
 	Name          string
+	Node          string // target Proxmox node; empty means use the client's default
 	VMID          int
 	VCPU          int32
 	MemoryMiB     int32
@@ -211,7 +212,8 @@ func (c *Client) do(ctx context.Context, method, path string, body interface{}) 
 }
 
 func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) {
-	zap.S().Infow("Creating VM", "vmid", config.VMID, "name", config.Name, "cpu", config.VCPU, "memory_mib", config.MemoryMiB)
+	node := c.nodeFor(config.Node)
+	zap.S().Infow("Creating VM", "vmid", config.VMID, "name", config.Name, "proxmox_node", node, "cpu", config.VCPU, "memory_mib", config.MemoryMiB)
 
 	if config.TemplateID > 0 {
 		if err := c.cloneVM(ctx, config); err != nil {
@@ -223,11 +225,11 @@ func (c *Client) CreateVM(ctx context.Context, config VMConfig) (string, error) 
 		}
 	}
 
-	if err := c.startVM(ctx, config.VMID); err != nil {
+	if err := c.startVM(ctx, node, config.VMID); err != nil {
 		return "", fmt.Errorf("start VM %d: %w", config.VMID, err)
 	}
 
-	ip, err := c.waitForIP(ctx, config.VMID, 5*time.Minute)
+	ip, err := c.waitForIP(ctx, node, config.VMID, 5*time.Minute)
 	if err != nil {
 		return "", fmt.Errorf("wait for IP of VM %d: %w", config.VMID, err)
 	}
@@ -252,6 +254,8 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	params.Set("net0", fmt.Sprintf("virtio=%s,bridge=%s", mac, config.NetworkBridge))
 	params.Set("boot", "order=scsi0;net0")
 	params.Set("agent", "1")
+
+	node := c.nodeFor(config.Node)
 
 	cpuType := config.CPUType
 	if cpuType == "" {
@@ -284,7 +288,7 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 		params.Set(key, value)
 	}
 
-	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu?%s", c.node, params.Encode()), nil)
+	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu?%s", node, params.Encode()), nil)
 	return err
 }
 
@@ -304,7 +308,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 	var taskID string
 	_ = json.Unmarshal(data, &taskID)
 	if taskID != "" {
-		if err := c.waitForTask(ctx, taskID); err != nil {
+		if err := c.waitForTask(ctx, c.node, taskID); err != nil {
 			return fmt.Errorf("wait for clone task: %w", err)
 		}
 	}
@@ -337,25 +341,52 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 	return nil
 }
 
-func (c *Client) startVM(ctx context.Context, vmid int) error {
-	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/start", c.node, vmid), nil)
+func (c *Client) startVM(ctx context.Context, node string, vmid int) error {
+	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/start", node, vmid), nil)
+	return err
+}
+
+// vmNode resolves the Proxmox node hosting a VM. Cluster resources is the only
+// placement-independent source; with VMs spread across nodes, c.node cannot be
+// assumed. Falls back to c.node when the lookup fails or the VM is unknown.
+func (c *Client) vmNode(ctx context.Context, vmid int) string {
+	if vms, err := c.ListVMs(ctx); err == nil {
+		for _, vm := range vms {
+			if vm.VMID == vmid {
+				return vm.Node
+			}
+		}
+	}
+	return c.node
+}
+
+// nodeFor returns the per-VM target node, falling back to the client default.
+func (c *Client) nodeFor(configNode string) string {
+	if configNode != "" {
+		return configNode
+	}
+	return c.node
+}
+
+func (c *Client) stopVMOn(ctx context.Context, node string, vmid int) error {
+	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/stop", node, vmid), nil)
 	return err
 }
 
 func (c *Client) StopVM(ctx context.Context, vmid int) error {
-	_, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/stop", c.node, vmid), nil)
-	return err
+	return c.stopVMOn(ctx, c.vmNode(ctx, vmid), vmid)
 }
 
 func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
+	node := c.vmNode(ctx, vmid)
 
 	// Try to stop first (ignore error if already stopped)
-	_ = c.StopVM(ctx, vmid)
+	_ = c.stopVMOn(ctx, node, vmid)
 
 	// Wait a bit for shutdown
 	time.Sleep(3 * time.Second)
 
-	_, err := c.do(ctx, "DELETE", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d", c.node, vmid), nil)
+	_, err := c.do(ctx, "DELETE", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d", node, vmid), nil)
 	if err != nil {
 		return fmt.Errorf("delete VM %d: %w", vmid, err)
 	}
@@ -386,10 +417,10 @@ func (c *Client) FindVMByName(ctx context.Context, name string) (int, error) {
 	return 0, fmt.Errorf("VM %q not found", name)
 }
 
-func (c *Client) waitForIP(ctx context.Context, vmid int, timeout time.Duration) (string, error) {
+func (c *Client) waitForIP(ctx context.Context, node string, vmid int, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", c.node, vmid), nil)
+		data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/agent/network-get-interfaces", node, vmid), nil)
 		if err == nil {
 			var ifaces []struct {
 				Name        string `json:"name"`
@@ -421,10 +452,10 @@ func (c *Client) waitForIP(ctx context.Context, vmid int, timeout time.Duration)
 	return "", fmt.Errorf("timeout waiting for IP of VM %d", vmid)
 }
 
-func (c *Client) waitForTask(ctx context.Context, upid string) error {
+func (c *Client) waitForTask(ctx context.Context, node string, upid string) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/tasks/%s", c.node, url.PathEscape(upid)), nil)
+		data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/tasks/%s", node, url.PathEscape(upid)), nil)
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue

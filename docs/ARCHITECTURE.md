@@ -155,7 +155,8 @@ Proxmox Cluster (3 nodes)
 
 **VM Placement Strategy:**
 - Control planes: pinned to specific Proxmox nodes (managed outside autoscaler)
-- Workers: placed by Proxmox HA scheduler (least-loaded)
+- Workers (non-GPU): spread round-robin across all online Proxmox nodes by VM index
+- GPU workers: pinned to the configured node (`PROXMOX_NODE`)
 
 ## Go Types
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -258,7 +259,6 @@ func TestGetNode_NoNodes(t *testing.T) {
 }
 
 func TestResolveNode(t *testing.T) {
-	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api2/json/nodes" {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -268,7 +268,6 @@ func TestResolveNode(t *testing.T) {
 			})
 			return
 		}
-		gotPath = r.URL.Path
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
@@ -278,9 +277,7 @@ func TestResolveNode(t *testing.T) {
 
 	err = c.ResolveNode(context.Background())
 	assert.NoError(t, err)
-
-	_ = c.startVM(context.Background(), 100)
-	assert.Equal(t, "/api2/json/nodes/pve1/qemu/100/status/start", gotPath)
+	assert.Equal(t, "pve1", c.node)
 }
 
 func TestPasswordAuth_ReloginOn401(t *testing.T) {
@@ -638,7 +635,7 @@ func TestStartVM(t *testing.T) {
 	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
 	require.NoError(t, err)
 
-	err = c.startVM(context.Background(), 200)
+	err = c.startVM(context.Background(), "pve", 200)
 	assert.NoError(t, err)
 	assert.Equal(t, "POST", gotMethod)
 	assert.Equal(t, "/api2/json/nodes/pve/qemu/200/status/start", gotPath)
@@ -679,13 +676,82 @@ func TestDeleteVM(t *testing.T) {
 	err = c.DeleteVM(context.Background(), 300)
 	elapsed := time.Since(start)
 	assert.NoError(t, err)
-	// DeleteVM calls StopVM (POST), then sleeps 3s, then DELETE
-	assert.Len(t, methods, 2)
-	assert.Equal(t, "POST", methods[0])   // stop
-	assert.Equal(t, "DELETE", methods[1]) // delete
-	assert.Contains(t, paths[0], "/status/stop")
-	assert.Contains(t, paths[1], "/qemu/300")
+	// DeleteVM resolves the VM's node (GET cluster resources), stops it, then
+	// sleeps 3s, then deletes it on the resolved node.
+	require.Len(t, methods, 3)
+	assert.Equal(t, "GET", methods[0])      // node lookup
+	assert.Equal(t, "POST", methods[1])     // stop
+	assert.Equal(t, "DELETE", methods[2])   // delete
+	assert.Contains(t, paths[1], "/status/stop")
+	assert.Equal(t, "/api2/json/nodes/pve/qemu/300", paths[2])
 	assert.GreaterOrEqual(t, elapsed.Seconds(), 2.5) // 3s sleep
+}
+
+func TestDeleteVM_ResolvesNodeFromCluster(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"vmid": 300, "name": "vm-x", "node": "pve2", "status": "running", "type": "qemu", "template": 0, "tags": "talos"},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+	c.node = "pve1" // simulate ResolveNode pinning a different node
+
+	err = c.DeleteVM(context.Background(), 300)
+	assert.NoError(t, err)
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300/status/stop", paths[1])
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300", paths[2])
+}
+
+func TestCreateVM_UsesConfigNode(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "/agent/network-get-interfaces") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"name": "eth0", "ip-addresses": []map[string]interface{}{
+						{"ip-address": "10.0.0.5", "ip-address-type": "ipv4"},
+					}},
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = c.CreateVM(ctx, VMConfig{
+		Name:          "spread-vm",
+		Node:          "pve2",
+		VMID:          500,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		DiskGiB:       10,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	})
+	assert.NoError(t, err)
+	require.Len(t, paths, 3)
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu", paths[0])
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu/500/status/start", paths[1])
+	assert.Contains(t, paths[2], "/api2/json/nodes/pve2/qemu/500/agent/network-get-interfaces")
 }
 
 func TestFindVMByName_Found(t *testing.T) {
@@ -745,7 +811,7 @@ func TestWaitForIP_Success(t *testing.T) {
 	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
 	require.NoError(t, err)
 
-	ip, err := c.waitForIP(context.Background(), 100, 10*time.Second)
+	ip, err := c.waitForIP(context.Background(), "pve", 100, 10*time.Second)
 	assert.NoError(t, err)
 	assert.Equal(t, "10.0.0.5", ip)
 }
@@ -785,7 +851,7 @@ func TestWaitForIP_SkipsLoopback(t *testing.T) {
 	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
 	require.NoError(t, err)
 
-	ip, err := c.waitForIP(context.Background(), 100, 30*time.Second)
+	ip, err := c.waitForIP(context.Background(), "pve", 100, 30*time.Second)
 	assert.NoError(t, err)
 	assert.Equal(t, "10.0.0.5", ip)
 	assert.GreaterOrEqual(t, callCount, 2)
@@ -803,7 +869,7 @@ func TestWaitForIP_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	_, err = c.waitForIP(ctx, 100, 5*time.Minute)
+	_, err = c.waitForIP(ctx, "pve", 100, 5*time.Minute)
 	assert.Error(t, err)
 }
 
@@ -818,7 +884,7 @@ func TestWaitForTask_Success(t *testing.T) {
 	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
 	require.NoError(t, err)
 
-	err = c.waitForTask(context.Background(), "UPID:sometask")
+	err = c.waitForTask(context.Background(), "pve", "UPID:sometask")
 	assert.NoError(t, err)
 }
 
@@ -836,7 +902,7 @@ func TestWaitForTask_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	err = c.waitForTask(ctx, "UPID:sometask")
+	err = c.waitForTask(ctx, "pve", "UPID:sometask")
 	assert.Error(t, err)
 }
 

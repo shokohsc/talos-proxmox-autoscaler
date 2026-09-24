@@ -434,6 +434,21 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 	}
 
 	createCount := len(owned)
+
+	// Non-GPU workers are spread round-robin across online nodes by their
+	// index; GPU workers pin to the configured node (PCI passthrough lives on
+	// specific hosts).
+	// ponytail: index%len(nodes) spreading, no least-loaded/migration; switch to
+	// Node.CPU/MaxCPU aware placement if node counts diverge unevenly.
+	var nodes []string
+	if workerType != "gpu" {
+		var err error
+		nodes, err = r.Proxmox.ListNodes(ctx)
+		if err != nil {
+			zap.S().Warnw("ListNodes failed, creating on default node", "error", err)
+		}
+	}
+
 	for i := 0; createCount < int(desired); i++ {
 		index := nextIndex + 1 + i
 		vmid := baseVMID + index
@@ -442,7 +457,11 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 			continue
 		}
 		createCount++
-		zap.S().Infow("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType)
+		node := ""
+		if len(nodes) > 0 {
+			node = nodes[index%len(nodes)]
+		}
+		zap.S().Infow("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType, "proxmox_node", node)
 
 		var pciDevices []proxmox.PCIDevice
 		if workerType == "gpu" {
@@ -462,9 +481,10 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 			tags += "," + cfg.Tags
 		}
 
-		go func(vmName string, vmid int, pciDevices []proxmox.PCIDevice) {
+		go func(vmName string, vmid int, node string, pciDevices []proxmox.PCIDevice) {
 			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 				Name:          vmName,
+				Node:          node,
 				VMID:          vmid,
 				VCPU:          int32(size.CPU),
 				MemoryMiB:     int32(size.MemoryGiB) * 1024,
@@ -485,7 +505,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 			if err := r.waitForNodeReady(ctx, ip); err != nil {
 				zap.S().Errorw("Node not ready after provisioning", "error", err, "ip", ip)
 			}
-		}(vmName, vmid, pciDevices)
+		}(vmName, vmid, node, pciDevices)
 	}
 }
 
