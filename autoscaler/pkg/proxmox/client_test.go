@@ -679,9 +679,9 @@ func TestDeleteVM(t *testing.T) {
 	// DeleteVM resolves the VM's node (GET cluster resources), stops it, then
 	// sleeps 3s, then deletes it on the resolved node.
 	require.Len(t, methods, 3)
-	assert.Equal(t, "GET", methods[0])      // node lookup
-	assert.Equal(t, "POST", methods[1])     // stop
-	assert.Equal(t, "DELETE", methods[2])   // delete
+	assert.Equal(t, "GET", methods[0])    // node lookup
+	assert.Equal(t, "POST", methods[1])   // stop
+	assert.Equal(t, "DELETE", methods[2]) // delete
 	assert.Contains(t, paths[1], "/status/stop")
 	assert.Equal(t, "/api2/json/nodes/pve/qemu/300", paths[2])
 	assert.GreaterOrEqual(t, elapsed.Seconds(), 2.5) // 3s sleep
