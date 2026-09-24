@@ -146,7 +146,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 
 		if gpuWorkersNeeded > currentGPUWorkers {
 			zap.S().Infow("Scaling up GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded, "size", gpuVMSize)
-			r.scaleUp(ctx, gpuWorkersNeeded, gpuVMSize, cfg, "gpu", ownedGPU)
+			r.scaleUp(ctx, gpuWorkersNeeded, gpuVMSize, cfg, "gpu", currentGPUWorkers, ownedGPU)
 		} else if gpuWorkersNeeded < currentGPUWorkers && int32(len(ownedGPU)) > gpuWorkersNeeded && unschedulableCount == 0 {
 			zap.S().Infow("Scaling down GPU workers", "current", currentGPUWorkers, "desired", gpuWorkersNeeded)
 			r.scaleDown(ctx, gpuWorkersNeeded, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID, ownedGPU)
@@ -157,7 +157,7 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 
 	if workersNeeded > currentWorkers {
 		zap.S().Infow("Scaling up", "current", currentWorkers, "desired", workersNeeded, "size", vmSize)
-		r.scaleUp(ctx, workersNeeded, vmSize, cfg, "vm", ownedRegular)
+		r.scaleUp(ctx, workersNeeded, vmSize, cfg, "vm", currentWorkers, ownedRegular)
 	} else if workersNeeded < currentWorkers && int32(len(ownedRegular)) > workersNeeded && unschedulableCount == 0 {
 		zap.S().Infow("Scaling down", "current", currentWorkers, "desired", workersNeeded)
 		r.scaleDown(ctx, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID, ownedRegular)
@@ -417,7 +417,7 @@ func filterOwned(vms []proxmox.VM, clusterName, prefix, autoscalerTag string, gp
 	return owned
 }
 
-func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, owned []proxmox.VM) {
+func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, current int32, owned []proxmox.VM) {
 	prefix := r.WorkerPrefix
 	baseVMID := r.BaseVMID
 	if workerType == "gpu" {
@@ -434,7 +434,12 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 		}
 	}
 
-	createCount := len(owned)
+	// Seed creation from the Kubernetes node deficit, not len(owned): a Proxmox VM
+	// that was created but never joined the cluster (still tagged "owned") would
+	// otherwise inflate createCount and permanently suppress scale-up, exactly the
+	// trap the reconciler's node-count source-of-truth comment warns about. The
+	// existing[name] skip below still prevents recreating VMs that already exist.
+	createCount := int(current)
 
 	// Non-GPU workers are spread round-robin across online nodes by their
 	// index; GPU workers pin to the configured node (PCI passthrough lives on

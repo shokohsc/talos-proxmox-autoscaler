@@ -554,7 +554,7 @@ func TestScaleUp(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r.scaleUp(ctx, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", nil)
+	r.scaleUp(ctx, 3, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", 0, nil)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -637,7 +637,7 @@ func TestScaleUp_GPU(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "gpu", nil)
+	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "gpu", 0, nil)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -722,7 +722,7 @@ func TestScaleUp_SpreadsAcrossNodes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", nil)
+	r.scaleUp(ctx, 2, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", 0, nil)
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
