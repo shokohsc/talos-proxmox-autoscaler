@@ -270,6 +270,7 @@ func (r *Reconciler) latestSchedulingFailures(ctx context.Context) map[string]st
 		FieldSelector: "reason=FailedScheduling",
 	})
 	if err != nil {
+		zap.S().Warnw("Failed to list scheduling events, unschedulable pods will not be counted", "error", err)
 		return nil
 	}
 	latest := make(map[string]string)
