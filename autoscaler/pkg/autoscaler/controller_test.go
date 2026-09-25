@@ -572,6 +572,48 @@ func TestScaleUp(t *testing.T) {
 	}
 }
 
+func TestScaleUp_CountsOwnedProvisioningVMs(t *testing.T) {
+	created := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
+		if r.Method == "POST" {
+			created <- struct{}{}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{
+		Proxmox:      proxmoxClient,
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+	cfg := &Config{
+		ClusterName:   "test",
+		AutoScalerTag: "talos",
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	}
+
+	r.scaleUp(context.Background(), 1, VMSize{CPU: 4, MemoryGiB: 8}, cfg, "vm", 0, []proxmox.VM{
+		{Name: "test-worker-vm-0", Tags: "talos"},
+	})
+
+	select {
+	case <-created:
+		t.Fatal("created a VM for an existing provisioning VM")
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
 func TestScaleUp_GPU(t *testing.T) {
 	var createdVMCount atomic.Int32
 	var tagValues []string
