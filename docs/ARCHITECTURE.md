@@ -52,7 +52,7 @@ The core control loop runs inside the Kubernetes cluster as a standard Go binary
 **Timer loop (every 30 seconds):**
 1. Read config from `autoscaler-config` ConfigMap
 2. List pods with `status.conditions` containing `PodScheduled=False, reason=Unschedulable`
-3. Aggregate CPU and memory requests of all unschedulable pods
+3. Aggregate CPU and memory requests of all unschedulable pods, skipping DaemonSet pods (they are created on every node, so they would make each scale-up trigger the next one)
 4. Calculate how many workers are needed and their optimal size (within min/max CPU/memory ranges)
 5. Create that many VMs (up to `max_workers`), if current count is insufficient
 6. Wait for nodes to register in the Kubernetes API
