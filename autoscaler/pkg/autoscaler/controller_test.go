@@ -386,6 +386,50 @@ func TestAggregatePending_NoPods(t *testing.T) {
 	assert.True(t, mem.IsZero())
 }
 
+func TestAggregatePending_IgnoresDaemonSetPods(t *testing.T) {
+	dsPod := pendingUnschedulablePod("node-exporter-abc", "kube-system", "200m")
+	dsPod.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "node-exporter", Controller: boolPtr(true)}}
+
+	// A non-controller reference to a DaemonSet does not make it a DaemonSet pod.
+	notOwned := pendingUnschedulablePod("ds-mirror", "default", "300m")
+	notOwned.OwnerReferences = []metav1.OwnerReference{{Kind: "DaemonSet", Name: "not-the-owner"}}
+
+	replicaSetPod := pendingUnschedulablePod("web-1", "default", "500m")
+	replicaSetPod.OwnerReferences = []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "web", Controller: boolPtr(true)}}
+
+	orphanPod := pendingUnschedulablePod("orphan", "default", "1")
+
+	r := &Reconciler{KubeClient: fake.NewSimpleClientset(
+		dsPod, notOwned, replicaSetPod, orphanPod,
+		failedSchedulingEvent("node-exporter-abc", "kube-system", "0/3 nodes are available: 1 Insufficient cpu."),
+		failedSchedulingEvent("ds-mirror", "default", "0/3 nodes are available: 1 Insufficient cpu."),
+		failedSchedulingEvent("web-1", "default", "0/3 nodes are available: 1 Insufficient cpu."),
+		failedSchedulingEvent("orphan", "default", "0/3 nodes are available: 1 Insufficient cpu."),
+	)}
+
+	cpu, _, gpu, count, err := r.aggregatePending(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, count, "DaemonSet pods must not count, orphans must")
+	assert.Equal(t, 0, gpu)
+	assert.Equal(t, "1800m", cpu.String())
+}
+
+func TestIsDaemonSetPod(t *testing.T) {
+	assert.False(t, isDaemonSetPod(&corev1.Pod{}), "orphan pod")
+	assert.False(t, isDaemonSetPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Controller: boolPtr(true)}},
+	}}))
+	assert.False(t, isDaemonSetPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		OwnerReferences: []metav1.OwnerReference{{Kind: "DaemonSet"}},
+	}}))
+	assert.True(t, isDaemonSetPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		OwnerReferences: []metav1.OwnerReference{
+			{Kind: "Node"},
+			{Kind: "DaemonSet", Controller: boolPtr(true)},
+		},
+	}}))
+}
+
 func TestFindEvictableNodes(t *testing.T) {
 	nodes := []corev1.Node{
 		{
@@ -1117,6 +1161,25 @@ func failedSchedulingEvent(name, namespace, message string) *corev1.Event {
 		Reason:         "FailedScheduling",
 		Message:        message,
 		LastTimestamp:  metav1.Now(),
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// pendingUnschedulablePod builds a pod that is Pending with a PodScheduled
+// Unschedulable condition and the given CPU request.
+func pendingUnschedulablePod(name, namespace, cpu string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu)},
+			}}},
+		},
+		Status: corev1.PodStatus{
+			Phase:      corev1.PodPending,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Reason: "Unschedulable", Status: corev1.ConditionTrue}},
+		},
 	}
 }
 

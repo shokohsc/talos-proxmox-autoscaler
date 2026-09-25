@@ -232,6 +232,9 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 	count := 0
 	gpuCount := 0
 	for _, pod := range podList.Items {
+		if isDaemonSetPod(&pod) {
+			continue
+		}
 		if pod.Status.Phase != corev1.PodPending {
 			continue
 		}
@@ -258,6 +261,16 @@ func (r *Reconciler) aggregatePending(ctx context.Context) (resource.Quantity, r
 		}
 	}
 	return totalCPU, totalMem, gpuCount, count, nil
+}
+
+// isDaemonSetPod reports whether a pod is managed by a DaemonSet. Such pods are
+// created once per node, including nodes the autoscaler has just added, so they
+// are unschedulable for as long as the new node is still joining — counting them
+// would make every scale-up trigger the next one. Every other pod counts as
+// demand, including orphans with no controller at all.
+func isDaemonSetPod(pod *corev1.Pod) bool {
+	owner := metav1.GetControllerOf(pod)
+	return owner != nil && owner.Kind == "DaemonSet"
 }
 
 // latestSchedulingFailures returns the most recent FailedScheduling event
