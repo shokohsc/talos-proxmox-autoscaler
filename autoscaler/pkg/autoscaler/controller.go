@@ -128,9 +128,6 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	ownedRegular := filterOwned(vms, cfg.ClusterName, r.WorkerPrefix, cfg.AutoScalerTag, false)
 	ownedGPU := filterOwned(vms, cfg.ClusterName, r.GPUPrefix, cfg.AutoScalerTag, true)
 
-	// Use Kubernetes node count as the source of truth for current workers.
-	// Proxmox VMs may exist before the node has joined the cluster, so counting
-	// VMs would inflate the worker count and prevent necessary scale-ups.
 	currentWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.WorkerPrefix)
 	currentGPUWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.GPUPrefix)
 
@@ -434,12 +431,7 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 		}
 	}
 
-	// Seed creation from the Kubernetes node deficit, not len(owned): a Proxmox VM
-	// that was created but never joined the cluster (still tagged "owned") would
-	// otherwise inflate createCount and permanently suppress scale-up, exactly the
-	// trap the reconciler's node-count source-of-truth comment warns about. The
-	// existing[name] skip below still prevents recreating VMs that already exist.
-	createCount := int(current)
+	createCount := len(owned)
 
 	// Non-GPU workers are spread round-robin across online nodes by their
 	// index; GPU workers pin to the configured node (PCI passthrough lives on
