@@ -1154,6 +1154,126 @@ func TestReconcile_NoAction(t *testing.T) {
 
 // --- helpers ---
 
+func TestReconcile_DeletesVMThatNeverJoined(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name":   "test",
+			"min_workers":    "0",
+			"max_workers":    "5",
+			"min_cpu":        "2",
+			"max_cpu":        "4",
+			"min_memory_gib": "4",
+			"max_memory_gib": "8",
+		},
+	}
+
+	orphan := vmRes(1000, "test-worker-vm-0", "talos", 0)
+	orphan["uptime"] = float64(provisioningTimeout.Seconds()) + 60
+
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerWithVMs(t, []map[string]interface{}{orphan}, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{
+		KubeClient:   fake.NewSimpleClientset(cm),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+
+	require.NoError(t, r.reconcile(context.Background()))
+	assert.Equal(t, []int{1000}, deletedVMIDs)
+}
+
+func TestReconcile_KeepsVMWithinProvisioningWindow(t *testing.T) {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "autoscaler-config", Namespace: "autoscaler-system"},
+		Data: map[string]string{
+			"cluster_name":   "test",
+			"min_workers":    "0",
+			"max_workers":    "5",
+			"min_cpu":        "2",
+			"max_cpu":        "4",
+			"min_memory_gib": "4",
+			"max_memory_gib": "8",
+		},
+	}
+
+	// Still booting: running, but nowhere near provisioningTimeout.
+	booting := vmRes(1000, "test-worker-vm-0", "talos", 0)
+	booting["uptime"] = float64(30)
+
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerWithVMs(t, []map[string]interface{}{booting}, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{
+		KubeClient:   fake.NewSimpleClientset(cm),
+		Proxmox:      proxmoxClient,
+		BaseVMID:     1000,
+		Namespace:    "autoscaler-system",
+		WorkerPrefix: "worker-vm",
+		GPUPrefix:    "worker-vm-gpu",
+	}
+
+	require.NoError(t, r.reconcile(context.Background()))
+	assert.Empty(t, deletedVMIDs)
+}
+
+func TestReapOrphans_KeepsVMDuringCreation(t *testing.T) {
+	proxmoxClient, err := newTestProxmoxClient("http://127.0.0.1:1")
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	stopped := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "stopped"}}
+
+	r.creating.Store(1)
+	kept, deleted := r.reapOrphans(context.Background(), stopped, map[string]bool{})
+	assert.Empty(t, deleted)
+	assert.Len(t, kept, 1)
+}
+
+func TestReapOrphans_DeletesStoppedVM(t *testing.T) {
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerWithVMs(t, nil, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	stopped := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "stopped"}}
+
+	kept, deleted := r.reapOrphans(context.Background(), stopped, map[string]bool{})
+	assert.Equal(t, 1, deleted)
+	assert.Empty(t, kept)
+	assert.Equal(t, []int{1000}, deletedVMIDs)
+}
+
+func TestReapOrphans_KeepsRegisteredVM(t *testing.T) {
+	srv := newMockProxmoxServerWithVMs(t, nil, new([]int))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	running := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "running", Uptime: 99999}}
+
+	kept, deleted := r.reapOrphans(context.Background(), running, map[string]bool{"test-worker-vm-0": true})
+	assert.Zero(t, deleted)
+	assert.Len(t, kept, 1)
+}
+
 func failedSchedulingEvent(name, namespace, message string) *corev1.Event {
 	return &corev1.Event{
 		ObjectMeta:     metav1.ObjectMeta{Name: name + ".fail", Namespace: namespace},
