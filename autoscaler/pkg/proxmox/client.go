@@ -484,6 +484,9 @@ type VM struct {
 	Type     string `json:"type"`
 	Template int    `json:"template"`
 	Tags     string `json:"tags"` // "," or ";" separated string
+	// Uptime is seconds since the VM last started. Cluster resources only
+	// reports it for running guests, so it is 0 for a VM that never started.
+	Uptime int64 `json:"uptime"`
 }
 
 // ListVMs returns every VM in the cluster. The API token needs the Audit

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -64,6 +65,7 @@ type Reconciler struct {
 	WorkerPrefix string // e.g. "worker-vm"
 	GPUPrefix    string // e.g. "worker-vm-gpu"
 	configHash   string
+	creating     atomic.Int64 // VMs currently being created by this replica
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -127,6 +129,17 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	}
 	ownedRegular := filterOwned(vms, cfg.ClusterName, r.WorkerPrefix, cfg.AutoScalerTag, false)
 	ownedGPU := filterOwned(vms, cfg.ClusterName, r.GPUPrefix, cfg.AutoScalerTag, true)
+
+	registered := make(map[string]bool, len(k8sNodes))
+	for _, n := range k8sNodes {
+		registered[n.Name] = true
+	}
+	ownedRegular, regularDeleted := r.reapOrphans(ctx, ownedRegular, registered)
+	ownedGPU, gpuDeleted := r.reapOrphans(ctx, ownedGPU, registered)
+	if regularDeleted+gpuDeleted > 0 {
+		// Proxmox frees the VMID asynchronously, so recreate on the next tick.
+		return nil
+	}
 
 	currentWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.WorkerPrefix)
 	currentGPUWorkers := countK8sNodes(k8sNodes, cfg.ClusterName, r.GPUPrefix)
@@ -427,6 +440,39 @@ func filterOwned(vms []proxmox.VM, clusterName, prefix, autoscalerTag string, gp
 	return owned
 }
 
+// reapOrphans drops owned VMs that never joined the cluster and are out of
+// provisioning, returning the ones that survive. Without this they deadlock the
+// autoscaler: scaleUp counts every Proxmox VM as a worker while scaleDown
+// refuses to touch unregistered nodes, so a single stuck VM blocks scaling
+// forever.
+func (r *Reconciler) reapOrphans(ctx context.Context, owned []proxmox.VM, registered map[string]bool) ([]proxmox.VM, int) {
+	kept := make([]proxmox.VM, 0, len(owned))
+	deleted := 0
+	for _, vm := range owned {
+		if registered[vm.Name] {
+			kept = append(kept, vm)
+			continue
+		}
+		// ponytail: a stopped VM counts as failed right away, except while this
+		// replica is creating one; a clone on another replica is protected by
+		// Proxmox rejecting the delete of a locked VM.
+		expired := vm.Status != "running" && r.creating.Load() == 0
+		expired = expired || vm.Uptime > int64(provisioningTimeout.Seconds())
+		if !expired {
+			kept = append(kept, vm)
+			continue
+		}
+		zap.S().Warnw("Deleting VM that never joined the cluster", "vm", vm.Name, "vmid", vm.VMID, "status", vm.Status, "uptime_seconds", vm.Uptime)
+		if err := r.Proxmox.DeleteVM(ctx, vm.VMID); err != nil {
+			zap.S().Errorw("Failed to delete VM that never joined the cluster", "error", err, "vmid", vm.VMID)
+			kept = append(kept, vm)
+			continue
+		}
+		deleted++
+	}
+	return kept, deleted
+}
+
 func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, current int32, owned []proxmox.VM) {
 	prefix := r.WorkerPrefix
 	baseVMID := r.BaseVMID
@@ -493,6 +539,9 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 		}
 
 		go func(vmName string, vmid int, node string, pciDevices []proxmox.PCIDevice) {
+			r.creating.Add(1)
+			defer r.creating.Add(-1)
+
 			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 				Name:          vmName,
 				Node:          node,
