@@ -140,6 +140,13 @@ kubectl get events --field-selector reason=NodeNotReady --sort-by='.lastTimestam
 | PXE/config server unreachable | Verify config server is serving Talos configs |
 | Control plane LB down | Verify HAProxy/keepalived or round-robin DNS |
 
+A VM that never registers is deleted automatically once it has been missing from
+the cluster for `provisioningTimeout` (10 minutes). The timer is per replica and
+starts when that replica first sees the VM unregistered, so a slow Talos install is
+not reaped while it is still booting. If you see `Deleting VM that never joined the
+cluster`, compare the `unregistered_for` value in the log with the VM's real age: if
+the node joined and then was removed from `kubectl get nodes`, the delete is correct.
+
 **Fix:**
 ```bash
 # Get correct bootstrap token

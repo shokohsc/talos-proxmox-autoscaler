@@ -1189,6 +1189,7 @@ func TestReconcile_DeletesVMThatNeverJoined(t *testing.T) {
 		Namespace:    "autoscaler-system",
 		WorkerPrefix: "worker-vm",
 		GPUPrefix:    "worker-vm-gpu",
+		pending:      map[int]time.Time{1000: time.Now().Add(-provisioningTimeout - time.Minute)},
 	}
 
 	require.NoError(t, r.reconcile(context.Background()))
@@ -1233,20 +1234,24 @@ func TestReconcile_KeepsVMWithinProvisioningWindow(t *testing.T) {
 	assert.Empty(t, deletedVMIDs)
 }
 
-func TestReapOrphans_KeepsVMDuringCreation(t *testing.T) {
+// A VM the autoscaler did not create itself (second replica) must still survive
+// its first sighting, even when it is not running yet.
+func TestReapOrphans_KeepsVMOnFirstSighting(t *testing.T) {
 	proxmoxClient, err := newTestProxmoxClient("http://127.0.0.1:1")
 	require.NoError(t, err)
 
 	r := &Reconciler{Proxmox: proxmoxClient}
 	stopped := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "stopped"}}
 
-	r.creating.Store(1)
 	kept, deleted := r.reapOrphans(context.Background(), stopped, map[string]bool{})
 	assert.Empty(t, deleted)
 	assert.Len(t, kept, 1)
 }
 
-func TestReapOrphans_DeletesStoppedVM(t *testing.T) {
+// Proxmox uptime must not drive reaping: a boot can exceed provisioningTimeout
+// while the node is still joining, and the uptime counter resets on every
+// restart.
+func TestReapOrphans_KeepsLongUptimeVMWithinWindow(t *testing.T) {
 	var deletedVMIDs []int
 	srv := newMockProxmoxServerWithVMs(t, nil, &deletedVMIDs)
 	defer srv.Close()
@@ -1255,12 +1260,82 @@ func TestReapOrphans_DeletesStoppedVM(t *testing.T) {
 	require.NoError(t, err)
 
 	r := &Reconciler{Proxmox: proxmoxClient}
-	stopped := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "stopped"}}
+	running := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "running", Uptime: 99999}}
+
+	_, deleted := r.reapOrphans(context.Background(), running, map[string]bool{})
+	assert.Zero(t, deleted)
+
+	// Same VM, still unregistered one window later: now it is a real orphan.
+	r.pending[1000] = time.Now().Add(-provisioningTimeout - time.Minute)
+	kept, deleted := r.reapOrphans(context.Background(), running, map[string]bool{})
+	assert.Equal(t, 1, deleted)
+	assert.Empty(t, kept)
+	assert.Equal(t, []int{1000}, deletedVMIDs)
+}
+
+// A node that shows up after being missing clears the reap timer, so a later
+// blip in the node list cannot accumulate towards a delete.
+func TestReapOrphans_RegistrationResetsTimer(t *testing.T) {
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerWithVMs(t, nil, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	running := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "running"}}
+	registered := map[string]bool{"test-worker-vm-0": true}
+
+	_, deleted := r.reapOrphans(context.Background(), running, map[string]bool{})
+	require.Zero(t, deleted)
+	_, deleted = r.reapOrphans(context.Background(), running, registered)
+	require.Zero(t, deleted)
+
+	r.pending[1000] = time.Now().Add(-provisioningTimeout - time.Minute)
+	_, deleted = r.reapOrphans(context.Background(), running, registered)
+	require.Zero(t, deleted)
+	assert.Empty(t, r.pending)
+
+	// Unregistered again: the timer starts over rather than firing at once.
+	_, deleted = r.reapOrphans(context.Background(), running, map[string]bool{})
+	assert.Zero(t, deleted)
+	assert.Empty(t, deletedVMIDs)
+}
+
+func TestReapOrphans_DeletesLongMissingVM(t *testing.T) {
+	var deletedVMIDs []int
+	srv := newMockProxmoxServerWithVMs(t, nil, &deletedVMIDs)
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	stopped := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Status: "stopped", Uptime: 1}}
+	r.pending = map[int]time.Time{1000: time.Now().Add(-provisioningTimeout - time.Minute)}
 
 	kept, deleted := r.reapOrphans(context.Background(), stopped, map[string]bool{})
 	assert.Equal(t, 1, deleted)
 	assert.Empty(t, kept)
 	assert.Equal(t, []int{1000}, deletedVMIDs)
+	assert.Empty(t, r.pending)
+}
+
+// VMIDs get reused after a delete; a fresh VM with the same ID must not inherit
+// the previous one's timer.
+func TestReapOrphans_PrunesVanishedVMIDs(t *testing.T) {
+	proxmoxClient, err := newTestProxmoxClient("http://127.0.0.1:1")
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	kept, deleted := r.reapOrphans(context.Background(), []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0"}}, map[string]bool{})
+	require.Zero(t, deleted)
+	require.Len(t, kept, 1)
+
+	_, deleted = r.reapOrphans(context.Background(), nil, map[string]bool{})
+	require.Zero(t, deleted)
+	assert.Empty(t, r.pending)
 }
 
 func TestReapOrphans_KeepsRegisteredVM(t *testing.T) {

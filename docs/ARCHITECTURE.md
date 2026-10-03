@@ -112,6 +112,14 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 3. Call Proxmox API to delete the VM
 4. Node disappears from Kubernetes
 
+**Orphan Reaping Flow:**
+An owned VM with no matching Kubernetes node is not a worker yet, but it does count
+towards `scaleUp`, so a VM stuck mid-install would block scaling forever. Each replica
+records when it first sees such a VM unregistered and deletes it only after the full
+`provisioningTimeout` (10m) has passed without a node appearing. The window is measured
+per replica rather than from Proxmox uptime because neither replica knows which VMs the
+other is still installing, and uptime restarts on every reboot.
+
 ### 4. PXE Boot Flow
 
 Workers do **not** use cloud-init or VM templates. Instead:
@@ -317,7 +325,7 @@ Service CIDR: 10.96.0.0/12
 | Proxmox API unreachable | Cannot provision/destroy VMs | Controller retries with exponential backoff |
 | ConfigMap missing or invalid | Cannot read VM specs or scaling params | Controller logs error and waits for ConfigMap update |
 | Descheduler not running | No scale-down occurs | Nodes stay alive; deploy/fix descheduler |
-| Node fails to join cluster | VM exists but unused | Controller detects and destroys after 5m timeout |
+| Node fails to join cluster | VM exists but unused | Controller detects and destroys after the 10m provisioning window |
 | Drain timeout exceeded | Node stays cordoned | Force-delete after configurable timeout |
 | Bootstrap token expired | New nodes can't join | Controller rotates token automatically |
 | PXE/config server unreachable | VMs can't boot Talos | VMs timeout and are destroyed by controller |
