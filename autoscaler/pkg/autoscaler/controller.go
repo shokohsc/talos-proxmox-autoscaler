@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -65,7 +65,12 @@ type Reconciler struct {
 	WorkerPrefix string // e.g. "worker-vm"
 	GPUPrefix    string // e.g. "worker-vm-gpu"
 	configHash   string
-	creating     atomic.Int64 // VMs currently being created by this replica
+	// pending maps an owned VM with no matching K8s node to the time this
+	// replica first noticed it missing. It is what decides whether a VM is an
+	// orphan, instead of Proxmox uptime: with two replicas neither knows which
+	// VMs the other is still booting, and uptime resets on every reboot.
+	mu      sync.Mutex
+	pending map[int]time.Time
 }
 
 func (r *Reconciler) Start(ctx context.Context) {
@@ -440,37 +445,83 @@ func filterOwned(vms []proxmox.VM, clusterName, prefix, autoscalerTag string, gp
 	return owned
 }
 
-// reapOrphans drops owned VMs that never joined the cluster and are out of
-// provisioning, returning the ones that survive. Without this they deadlock the
-// autoscaler: scaleUp counts every Proxmox VM as a worker while scaleDown
-// refuses to touch unregistered nodes, so a single stuck VM blocks scaling
-// forever.
+// reapOrphans drops owned VMs that have had no matching K8s node for longer than
+// provisioningTimeout, returning the ones that survive. Without this they deadlock
+// the autoscaler: scaleUp counts every Proxmox VM as a worker while scaleDown
+// refuses to touch unregistered nodes, so a single stuck VM blocks scaling forever.
+//
+// The window is measured per replica from its own observations, so a VM being
+// installed by either replica is never reaped early.
 func (r *Reconciler) reapOrphans(ctx context.Context, owned []proxmox.VM, registered map[string]bool) ([]proxmox.VM, int) {
 	kept := make([]proxmox.VM, 0, len(owned))
 	deleted := 0
+	now := time.Now()
 	for _, vm := range owned {
 		if registered[vm.Name] {
+			r.clearPending(vm.VMID)
 			kept = append(kept, vm)
 			continue
 		}
-		// ponytail: a stopped VM counts as failed right away, except while this
-		// replica is creating one; a clone on another replica is protected by
-		// Proxmox rejecting the delete of a locked VM.
-		expired := vm.Status != "running" && r.creating.Load() == 0
-		expired = expired || vm.Uptime > int64(provisioningTimeout.Seconds())
-		if !expired {
+		// Time since this replica first saw the VM unregistered, not Proxmox
+		// uptime: a boot can take longer than provisioningTimeout, and with two
+		// replicas one of them never issued the create, so uptime is not a
+		// reliable "still provisioning" signal.
+		first := r.markPending(vm.VMID, now)
+		if now.Sub(first) < provisioningTimeout {
 			kept = append(kept, vm)
 			continue
 		}
-		zap.S().Warnw("Deleting VM that never joined the cluster", "vm", vm.Name, "vmid", vm.VMID, "status", vm.Status, "uptime_seconds", vm.Uptime)
+		zap.S().Warnw("Deleting VM that never joined the cluster", "vm", vm.Name, "vmid", vm.VMID, "status", vm.Status, "uptime_seconds", vm.Uptime, "unregistered_for", now.Sub(first).String())
 		if err := r.Proxmox.DeleteVM(ctx, vm.VMID); err != nil {
 			zap.S().Errorw("Failed to delete VM that never joined the cluster", "error", err, "vmid", vm.VMID)
 			kept = append(kept, vm)
 			continue
 		}
+		r.clearPending(vm.VMID)
 		deleted++
 	}
+	r.prunePending(owned)
 	return kept, deleted
+}
+
+// markPending returns the time this VM was first seen unregistered, recording now
+// on first sight.
+func (r *Reconciler) markPending(vmid int, now time.Time) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if first, ok := r.pending[vmid]; ok {
+		return first
+	}
+	if r.pending == nil {
+		r.pending = make(map[int]time.Time)
+	}
+	r.pending[vmid] = now
+	return now
+}
+
+func (r *Reconciler) clearPending(vmid int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.pending, vmid)
+}
+
+// prunePending drops bookkeeping for VMs that no longer exist so a reused VMID
+// does not inherit an old timer.
+func (r *Reconciler) prunePending(owned []proxmox.VM) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for vmid := range r.pending {
+		found := false
+		for _, vm := range owned {
+			if vm.VMID == vmid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(r.pending, vmid)
+		}
+	}
 }
 
 func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, current int32, owned []proxmox.VM) {
@@ -539,9 +590,6 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 		}
 
 		go func(vmName string, vmid int, node string, pciDevices []proxmox.PCIDevice) {
-			r.creating.Add(1)
-			defer r.creating.Add(-1)
-
 			ip, err := r.Proxmox.CreateVM(ctx, proxmox.VMConfig{
 				Name:          vmName,
 				Node:          node,
