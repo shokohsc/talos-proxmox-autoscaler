@@ -14,6 +14,9 @@ kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autosc
 # ConfigMap state
 kubectl get configmap autoscaler-config -n autoscaler-system -o yaml
 
+# Which replica is reconciling (the lease holder)
+kubectl get lease talos-proxmox-autoscaler -n autoscaler-system -o yaml
+
 # Pending pods
 kubectl get pods --field-selector=status.phase=Pending
 kubectl get events --field-selector reason=FailedScheduling --sort-by='.lastTimestamp' | tail -20
@@ -141,11 +144,12 @@ kubectl get events --field-selector reason=NodeNotReady --sort-by='.lastTimestam
 | Control plane LB down | Verify HAProxy/keepalived or round-robin DNS |
 
 A VM that never registers is deleted automatically once it has been missing from
-the cluster for `provisioningTimeout` (10 minutes). The timer is per replica and
-starts when that replica first sees the VM unregistered, so a slow Talos install is
-not reaped while it is still booting. If you see `Deleting VM that never joined the
-cluster`, compare the `unregistered_for` value in the log with the VM's real age: if
-the node joined and then was removed from `kubectl get nodes`, the delete is correct.
+the cluster for `provisioningTimeout` (10 minutes). The timer starts when the leader
+first sees the VM unregistered, so a slow Talos install is not reaped while it is
+still booting, and after a failover it restarts from zero — never an early reap.
+If you see `Deleting VM that never joined the cluster`, compare the
+`unregistered_for` value in the log with the VM's real age: if the node joined and
+then was removed from `kubectl get nodes`, the delete is correct.
 
 **Fix:**
 ```bash
@@ -363,6 +367,9 @@ kubectl auth can-i list configmaps --as=system:serviceaccount:autoscaler-system:
 
 kubectl auth can-i create events --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
 # yes
+
+kubectl auth can-i create leases --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
+# yes
 ```
 
 ### 10. Network Partition Between Kubernetes and Proxmox
@@ -396,6 +403,38 @@ ufw allow from 10.0.1.0/24 to any port 8006
 
 # Check for dropped packets
 tcpdump -i vmbr0 port 6443 -n
+```
+
+### 11. No Scaling Activity
+
+The two replicas reconcile only while one of them holds the
+`talos-proxmox-autoscaler` Lease; the other one deliberately stays idle. Scaling
+stops if nobody holds the lease — usually missing `leases` RBAC, so every replica
+fails to acquire it.
+
+**Symptoms:**
+- No `Scale decision` or `Scaling up` logs on any replica, or repeated
+  `leases "talos-proxmox-autoscaler" is forbidden` alongside `Contending for autoscaler lease` loops
+- Pending pods stay pending although capacity is available
+
+**Diagnosis:**
+```bash
+# Who holds the lease? renewTime should be within seconds
+kubectl get lease talos-proxmox-autoscaler -n autoscaler-system -o yaml
+
+# Can the service account touch leases?
+kubectl auth can-i create leases -n autoscaler-system \
+  --as=system:serviceaccount:autoscaler-system:talos-proxmox-autoscaler
+
+# Which pod is the leader
+kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler \
+  | grep -E "Acquired autoscaler lease|Leadership lost"
+```
+
+**Fix:**
+```bash
+# Re-apply RBAC (adds the leader-election Role/RoleBinding)
+kubectl apply -f kubernetes/rbac/
 ```
 
 ## Log Levels

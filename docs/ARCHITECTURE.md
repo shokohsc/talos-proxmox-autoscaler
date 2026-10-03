@@ -114,11 +114,13 @@ Direct HTTP client that manages VM lifecycle on Proxmox. Supports two authentica
 
 **Orphan Reaping Flow:**
 An owned VM with no matching Kubernetes node is not a worker yet, but it does count
-towards `scaleUp`, so a VM stuck mid-install would block scaling forever. Each replica
+towards `scaleUp`, so a VM stuck mid-install would block scaling forever. The leader
 records when it first sees such a VM unregistered and deletes it only after the full
-`provisioningTimeout` (10m) has passed without a node appearing. The window is measured
-per replica rather than from Proxmox uptime because neither replica knows which VMs the
-other is still installing, and uptime restarts on every reboot.
+`provisioningTimeout` (10m) has passed without a node appearing. The window is
+measured from the leader's own observations rather than from Proxmox uptime because a
+boot can take longer than `provisioningTimeout` and uptime restarts on every reboot.
+After a failover the new leader's timer starts empty, so an orphaned VM is kept for
+one more window — in the safe direction, never reaped early.
 
 ### 4. PXE Boot Flow
 
@@ -316,7 +318,7 @@ Service CIDR: 10.96.0.0/12
 - **Workers**: scaled dynamically based on unschedulable pod resource requests, always maintain at least `min_workers` nodes
 - **Node drain**: uses standard Kubernetes grace period (30s default)
 - **Proxmox HA**: VMs marked with Proxmox HA group for automatic restart on node failure
-- **Stateless replicas** — 2+ concurrent pods reconcile every 30s with no leader election; ownership counts come from the Proxmox VM tag list so all replicas agree
+- **Leader-elected replicas** — 2+ pods contend for the `talos-proxmox-autoscaler` Lease in their namespace; only the holder reconciles, so scale decisions come from one replica instead of two racing on the same next VM index. Ownership counts come from the Proxmox VM tag list, so a new leader starts from the same truth. The standby releases nothing and takes over within the lease duration; a graceful leader exit releases the lease immediately
 
 ## Failure Modes
 
@@ -329,3 +331,5 @@ Service CIDR: 10.96.0.0/12
 | Drain timeout exceeded | Node stays cordoned | Force-delete after configurable timeout |
 | Bootstrap token expired | New nodes can't join | Controller rotates token automatically |
 | PXE/config server unreachable | VMs can't boot Talos | VMs timeout and are destroyed by controller |
+| Leader Lease unavailable (`leases` RBAC missing) | No replica reconciles, no scaling | Re-apply `kubernetes/rbac/`; the lease name is `talos-proxmox-autoscaler` |
+| Leader pod lost | Its in-flight reconcile stops; the standby takes over within the lease duration | Automatic; the losing pod exits so it re-contends cleanly |

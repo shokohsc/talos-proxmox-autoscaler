@@ -37,8 +37,8 @@ Unschedulable Pods → Controller (30s timer loop) → Proxmox API → VM
 - **ConfigMap-based config** — all VM specs, cluster settings, and scaling parameters live in a single `autoscaler-config` ConfigMap (no CRDs)
 - **Dual auth** — supports both Proxmox API token and username/password authentication (auto-detected from secret fields)
 - **Node auto-discovery** — automatically selects an available cluster node if `proxmox_node` is not configured
-- **Tag-based ownership** — every VM gets the configurable `autoscaler_tag` (default `talos`); GPU workers additionally get `gpu`; ConfigMap `tags` field appended. Scale decisions derive from the Proxmox VM list, not pod memory, so replicas are stateless
-- **Stateless HA** — concurrent + idempotent: run multiple replicas (`replicas: 2`); all decode from the same ConfigMap and Proxmox truth, so racing duplicate creates/deletes log harmlessly and converge next tick
+- **Tag-based ownership** — every VM gets the configurable `autoscaler_tag` (default `talos`); GPU workers additionally get `gpu`; ConfigMap `tags` field appended. Scale decisions derive from the Proxmox VM list, not pod memory
+- **Leader-elected HA** — run multiple replicas (`replicas: 2`); they contend for the `talos-proxmox-autoscaler` Lease and only the holder reconciles, so the replicas never race on the same next VM index. The standby takes over when the leader exits (`kubectl get lease -n autoscaler-system talos-proxmox-autoscaler -o yaml`)
 - **Hot config reload** — ConfigMap changes are detected (hash) and applied to future scale decisions within 30s
 - **Optional MAC/SMBIOS** — explicit `mac_address` for PXE config lookup, `serial` for identification
 
@@ -165,6 +165,7 @@ Optional fields: `mac_address`, `serial`, `cpu_type`, `proxmox_insecure`, `proxm
 ```bash
 kubectl get configmap autoscaler-config -n autoscaler-system
 kubectl get pods -n autoscaler-system
+kubectl get lease talos-proxmox-autoscaler -n autoscaler-system  # the reconciling replica
 ```
 
 ## Documentation
