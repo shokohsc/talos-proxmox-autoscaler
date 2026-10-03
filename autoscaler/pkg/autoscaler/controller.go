@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -395,10 +396,14 @@ func countK8sNodes(nodeList []corev1.Node, clusterName, prefix string) int32 {
 	return count
 }
 
+func splitTags(tags string) []string {
+	return strings.FieldsFunc(tags, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t'
+	})
+}
+
 func hasTag(tags, target string) bool {
-	for _, t := range strings.FieldsFunc(tags, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' '
-	}) {
+	for _, t := range splitTags(tags) {
 		if t == target {
 			return true
 		}
@@ -611,38 +616,31 @@ func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid i
 	}
 }
 
-// tagVMsWithNodeName ensures that owned VMs whose names match registered K8s nodes have the node name
-// in their Proxmox tags. Tags are "," separated in Proxmox; we must merge with existing tags because
-// the API replaces the tags field.
+// tagVMsWithNodeName adds the Kubernetes node name to the Proxmox tags of every owned VM that has
+// joined the cluster. Proxmox replaces the whole tags field on write, so existing tags are merged.
 func (r *Reconciler) tagVMsWithNodeName(ctx context.Context, owned []proxmox.VM, registered map[string]bool) error {
+	var firstErr error
 	for _, vm := range owned {
-		if !registered[vm.Name] {
+		if !registered[vm.Name] || hasTag(vm.Tags, vm.Name) {
 			continue
 		}
-		if hasTag(vm.Tags, vm.Name) {
-			continue
-		}
-		// Merge: start from existing tags, deduplicate, ensure vm.Name is present.
 		tags := make([]string, 0, 8)
-		for _, t := range strings.FieldsFunc(vm.Tags, func(r rune) bool {
-			return r == ',' || r == ';' || r == ' ' || r == '\t'
-		}) {
-			if t != "" && t != vm.Name {
+		for _, t := range splitTags(vm.Tags) {
+			if t != vm.Name {
 				tags = append(tags, t)
 			}
 		}
 		tags = append(tags, vm.Name)
-		merged := strings.Join(tags, ",")
-		// Need to set config; use Proxmox API. Client doesn't expose SetVMConfig params - but easier to use do?
-		// We added SetVMConfig taking url.Values; construct params.
-		params := make(map[string][]string)
-		params["tags"] = []string{merged}
-		if err := r.Proxmox.SetVMConfig(ctx, vm.VMID, params); err != nil {
-			return err
+		if err := r.Proxmox.SetVMConfig(ctx, vm.VMID, url.Values{"tags": {strings.Join(tags, ",")}}); err != nil {
+			zap.S().Errorw("Failed to tag VM with node name", "error", err, "vm", vm.Name, "vmid", vm.VMID)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		zap.S().Infow("Tagged VM with node name", "vm", vm.Name, "vmid", vm.VMID)
 	}
-	return nil
+	return firstErr
 }
 
 // ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names
