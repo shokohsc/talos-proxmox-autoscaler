@@ -1132,6 +1132,10 @@ func TestReconcile_NoAction(t *testing.T) {
 			})
 			return
 		}
+		if r.Method == "PUT" && strings.Contains(r.URL.Path, "/qemu/") && strings.Contains(r.URL.Path, "/config") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
 		t.Fatal("no proxmox calls expected beyond node resolution and VM listing")
 	}))
 	defer srv.Close()
@@ -1272,6 +1276,112 @@ func TestReapOrphans_KeepsRegisteredVM(t *testing.T) {
 	kept, deleted := r.reapOrphans(context.Background(), running, map[string]bool{"test-worker-vm-0": true})
 	assert.Zero(t, deleted)
 	assert.Len(t, kept, 1)
+}
+
+func TestTagVMsWithNodeName_MergesNodeNameIntoTags(t *testing.T) {
+	var mu sync.Mutex
+	written := map[int]string{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": vmRes(1000, "test-worker-vm-0", "talos", 0)})
+			return
+		}
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
+		if r.Method == "PUT" && strings.HasSuffix(r.URL.Path, "/config") {
+			var vmid int
+			_, _ = fmt.Sscanf(strings.Split(r.URL.Path, "/")[len(strings.Split(r.URL.Path, "/"))-2], "%d", &vmid)
+			mu.Lock()
+			written[vmid] = r.URL.Query().Get("tags")
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	owned := []proxmox.VM{{VMID: 1000, Name: "test-worker-vm-0", Tags: "talos;gpu"}}
+	registered := map[string]bool{"test-worker-vm-0": true}
+
+	require.NoError(t, r.tagVMsWithNodeName(context.Background(), owned, registered))
+	assert.Equal(t, "talos,gpu,test-worker-vm-0", written[1000])
+
+	// already tagged -> no second write
+	written[1000] = ""
+	owned[0].Tags = "talos,test-worker-vm-0"
+	require.NoError(t, r.tagVMsWithNodeName(context.Background(), owned, registered))
+	assert.Empty(t, written[1000])
+
+	// not registered -> no write at all
+	written[1000] = ""
+	require.NoError(t, r.tagVMsWithNodeName(context.Background(), owned, map[string]bool{}))
+	assert.Empty(t, written[1000])
+}
+
+func TestTagVMsWithNodeName_ContinuesAfterError(t *testing.T) {
+	var failFor atomic.Int64
+	failFor.Store(1000)
+
+	var mu sync.Mutex
+	written := map[int]string{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api2/json/cluster/resources" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					vmRes(1000, "test-worker-vm-0", "talos", 0),
+					vmRes(1001, "test-worker-vm-1", "talos", 0),
+				},
+			})
+			return
+		}
+		if r.URL.Path == "/api2/json/nodes" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"node": "pve", "status": "online"}},
+			})
+			return
+		}
+		if r.Method == "PUT" && strings.HasSuffix(r.URL.Path, "/config") {
+			parts := strings.Split(r.URL.Path, "/")
+			var vmid int
+			_, _ = fmt.Sscanf(parts[len(parts)-2], "%d", &vmid)
+			if vmid == int(failFor.Load()) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": "boom"})
+				return
+			}
+			mu.Lock()
+			written[vmid] = r.URL.Query().Get("tags")
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	proxmoxClient, err := newTestProxmoxClient(srv.URL)
+	require.NoError(t, err)
+
+	r := &Reconciler{Proxmox: proxmoxClient}
+	owned := []proxmox.VM{
+		{VMID: 1000, Name: "test-worker-vm-0", Tags: "talos"},
+		{VMID: 1001, Name: "test-worker-vm-1", Tags: "talos"},
+	}
+	registered := map[string]bool{"test-worker-vm-0": true, "test-worker-vm-1": true}
+
+	assert.Error(t, r.tagVMsWithNodeName(context.Background(), owned, registered))
+	assert.Equal(t, "talos,test-worker-vm-1", written[1001])
 }
 
 func failedSchedulingEvent(name, namespace, message string) *corev1.Event {

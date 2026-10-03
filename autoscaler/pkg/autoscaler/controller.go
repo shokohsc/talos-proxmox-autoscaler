@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -171,6 +172,10 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 	} else if workersNeeded < currentWorkers && int32(len(ownedRegular)) > workersNeeded && unschedulableCount == 0 {
 		zap.S().Infow("Scaling down", "current", currentWorkers, "desired", workersNeeded)
 		r.scaleDown(ctx, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID, ownedRegular)
+	}
+
+	if err := r.tagVMsWithNodeName(ctx, append(ownedRegular, ownedGPU...), registered); err != nil {
+		zap.S().Warnw("Failed to tag VMs with node name", "error", err)
 	}
 
 	return nil
@@ -391,10 +396,14 @@ func countK8sNodes(nodeList []corev1.Node, clusterName, prefix string) int32 {
 	return count
 }
 
+func splitTags(tags string) []string {
+	return strings.FieldsFunc(tags, func(r rune) bool {
+		return r == ',' || r == ';' || r == ' ' || r == '\t'
+	})
+}
+
 func hasTag(tags, target string) bool {
-	for _, t := range strings.FieldsFunc(tags, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' '
-	}) {
+	for _, t := range splitTags(tags) {
 		if t == target {
 			return true
 		}
@@ -605,6 +614,33 @@ func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid i
 	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 		zap.S().Errorw("Failed to delete VM", "error", err, "vmid", vmid)
 	}
+}
+
+// tagVMsWithNodeName adds the Kubernetes node name to the Proxmox tags of every owned VM that has
+// joined the cluster. Proxmox replaces the whole tags field on write, so existing tags are merged.
+func (r *Reconciler) tagVMsWithNodeName(ctx context.Context, owned []proxmox.VM, registered map[string]bool) error {
+	var firstErr error
+	for _, vm := range owned {
+		if !registered[vm.Name] || hasTag(vm.Tags, vm.Name) {
+			continue
+		}
+		tags := make([]string, 0, 8)
+		for _, t := range splitTags(vm.Tags) {
+			if t != vm.Name {
+				tags = append(tags, t)
+			}
+		}
+		tags = append(tags, vm.Name)
+		if err := r.Proxmox.SetVMConfig(ctx, vm.VMID, url.Values{"tags": {strings.Join(tags, ",")}}); err != nil {
+			zap.S().Errorw("Failed to tag VM with node name", "error", err, "vm", vm.Name, "vmid", vm.VMID)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		zap.S().Infow("Tagged VM with node name", "vm", vm.Name, "vmid", vm.VMID)
+	}
+	return firstErr
 }
 
 // ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names

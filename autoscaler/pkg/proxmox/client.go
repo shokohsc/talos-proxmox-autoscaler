@@ -524,6 +524,16 @@ func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
 	return online, nil
 }
 
+// SetVMConfig updates QEMU configuration via PUT /nodes/{node}/qemu/{vmid}/config.
+func (c *Client) SetVMConfig(ctx context.Context, vmid int, params url.Values) error {
+	node := c.vmNode(ctx, vmid)
+	if params == nil {
+		params = url.Values{}
+	}
+	_, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", node, vmid, params.Encode()), nil)
+	return err
+}
+
 func (c *Client) GetNode(ctx context.Context) (string, error) {
 	nodes, err := c.ListNodes(ctx)
 	if err != nil {
