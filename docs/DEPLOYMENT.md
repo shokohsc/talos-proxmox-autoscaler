@@ -263,6 +263,8 @@ This creates:
 - `ServiceAccount: talos-proxmox-autoscaler`
 - `ClusterRole: talos-proxmox-autoscaler` with permissions for nodes, pods, configmaps, events
 - `ClusterRoleBinding: talos-proxmox-autoscaler`
+- `Role: talos-proxmox-autoscaler-leaderelection` in the autoscaler namespace, granting `get`/`create`/`update` on `coordination.k8s.io/leases` so only the Lease holder reconciles
+- `RoleBinding: talos-proxmox-autoscaler-leaderelection`
 
 ## Step 8: Deploy the Descheduler (Optional but Recommended)
 
@@ -316,6 +318,10 @@ make deploy
 kubectl get pods -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler
 # NAME                                        READY   STATUS    RESTARTS   AGE
 # talos-proxmox-autoscaler-xxxx-xxxx        1/1     Running   0          30s
+
+# Check which replica is reconciling (only the lease holder scales)
+kubectl get lease talos-proxmox-autoscaler -n autoscaler-system -o yaml
+# spec.holderIdentity: talos-proxmox-autoscaler-xxxx-xxxx
 
 # Check logs
 kubectl logs -n autoscaler-system -l app.kubernetes.io/name=talos-proxmox-autoscaler -f

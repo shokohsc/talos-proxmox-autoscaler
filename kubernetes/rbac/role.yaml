@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: talos-proxmox-autoscaler-leaderelection
+  namespace: autoscaler-system
+  labels:
+    app.kubernetes.io/name: talos-proxmox-autoscaler
+    app.kubernetes.io/component: autoscaler
+rules:
+  # Leader election Lease: only the holder reconciles and scales. Namespaced
+  # instead of added to the ClusterRole, so the autoscaler cannot seize the
+  # leader election of any other controller in the cluster.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
