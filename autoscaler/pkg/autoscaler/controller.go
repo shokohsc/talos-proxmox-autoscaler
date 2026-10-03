@@ -173,6 +173,10 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		r.scaleDown(ctx, workersNeeded, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID, ownedRegular)
 	}
 
+	if err := r.tagVMsWithNodeName(ctx, append(ownedRegular, ownedGPU...), registered); err != nil {
+		zap.S().Warnw("Failed to tag VMs with node name", "error", err)
+	}
+
 	return nil
 }
 
@@ -605,6 +609,40 @@ func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid i
 	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
 		zap.S().Errorw("Failed to delete VM", "error", err, "vmid", vmid)
 	}
+}
+
+// tagVMsWithNodeName ensures that owned VMs whose names match registered K8s nodes have the node name
+// in their Proxmox tags. Tags are "," separated in Proxmox; we must merge with existing tags because
+// the API replaces the tags field.
+func (r *Reconciler) tagVMsWithNodeName(ctx context.Context, owned []proxmox.VM, registered map[string]bool) error {
+	for _, vm := range owned {
+		if !registered[vm.Name] {
+			continue
+		}
+		if hasTag(vm.Tags, vm.Name) {
+			continue
+		}
+		// Merge: start from existing tags, deduplicate, ensure vm.Name is present.
+		tags := make([]string, 0, 8)
+		for _, t := range strings.FieldsFunc(vm.Tags, func(r rune) bool {
+			return r == ',' || r == ';' || r == ' ' || r == '\t'
+		}) {
+			if t != "" && t != vm.Name {
+				tags = append(tags, t)
+			}
+		}
+		tags = append(tags, vm.Name)
+		merged := strings.Join(tags, ",")
+		// Need to set config; use Proxmox API. Client doesn't expose SetVMConfig params - but easier to use do?
+		// We added SetVMConfig taking url.Values; construct params.
+		params := make(map[string][]string)
+		params["tags"] = []string{merged}
+		if err := r.Proxmox.SetVMConfig(ctx, vm.VMID, params); err != nil {
+			return err
+		}
+		zap.S().Infow("Tagged VM with node name", "vm", vm.Name, "vmid", vm.VMID)
+	}
+	return nil
 }
 
 // ponytail: use strings.Cut to parse "-{prefix}-N" suffix, avoids Sscanf greedy %s bug with multi-hyphen cluster names

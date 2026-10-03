@@ -1132,6 +1132,10 @@ func TestReconcile_NoAction(t *testing.T) {
 			})
 			return
 		}
+		if r.Method == "PUT" && strings.Contains(r.URL.Path, "/qemu/") && strings.Contains(r.URL.Path, "/config") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+			return
+		}
 		t.Fatal("no proxmox calls expected beyond node resolution and VM listing")
 	}))
 	defer srv.Close()

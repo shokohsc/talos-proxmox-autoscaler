@@ -524,25 +524,28 @@ func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
 	return online, nil
 }
 
-func (c *Client) GetNode(ctx context.Context) (string, error) {
-	nodes, err := c.ListNodes(ctx)
+// SetVMConfig updates QEMU configuration via PUT /nodes/{node}/qemu/{vmid}/config.
+func (c *Client) SetVMConfig(ctx context.Context, vmid int, params url.Values) error {
+	node := c.vmNode(ctx, vmid)
+	if params == nil {
+		params = url.Values{}
+	}
+	_, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", node, vmid, params.Encode()), nil)
+	return err
+}
+
+// GetVMConfig fetches current QEMU configuration.
+func (c *Client) GetVMConfig(ctx context.Context, vmid int) (map[string]interface{}, error) {
+	node := c.vmNode(ctx, vmid)
+	data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config", node, vmid), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(nodes) == 0 {
-		return "", fmt.Errorf("no active nodes found")
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
 	}
-
-	if c.node != "" {
-		for _, n := range nodes {
-			if n == c.node {
-				return c.node, nil
-			}
-		}
-		zap.S().Warnf("Configured node %q not found in cluster, using first available: %s", c.node, nodes[0])
-	}
-
-	return nodes[0], nil
+	return cfg, nil
 }
 
 // ResolveNode sets the client's node to a valid cluster node.
@@ -554,6 +557,26 @@ func (c *Client) ResolveNode(ctx context.Context) error {
 	}
 	c.node = node
 	return nil
+}
+
+// GetNode returns a valid cluster node, preferring the configured node if present and online.
+func (c *Client) GetNode(ctx context.Context) (string, error) {
+	nodes, err := c.ListNodes(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(nodes) == 0 {
+		return "", fmt.Errorf("no active nodes found")
+	}
+	if c.node != "" {
+		for _, n := range nodes {
+			if n == c.node {
+				return c.node, nil
+			}
+		}
+		zap.S().Warnf("Configured node %q not found in cluster, using first available: %s", c.node, nodes[0])
+	}
+	return nodes[0], nil
 }
 
 func randomMAC() string {
