@@ -31,10 +31,14 @@ type Client struct {
 	baseURL     string
 	tokenID     string
 	tokenSecret string
-	node        string
-	authType    AuthType
-	ticket      string
-	csrfToken   string
+	node        string // configured default node; may be empty
+	// resolved is the last known valid default node, refreshed by ResolveNode.
+	// Kept separate from node so a configured node that temporarily vanishes
+	// cannot permanently repoint default placement.
+	resolved  string
+	authType  AuthType
+	ticket    string
+	csrfToken string
 }
 
 type PCIDevice struct {
@@ -137,71 +141,86 @@ func (c *Client) login() error {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body interface{}) (json.RawMessage, error) {
-	var reqBody io.Reader
+	var payload []byte
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal request: %w", err)
 		}
-		reqBody = bytes.NewReader(data)
+		payload = data
 	}
 
-	u := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	if c.authType == AuthToken {
-		req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
-	} else {
-		if c.ticket == "" {
-			if err := c.login(); err != nil {
-				return nil, err
-			}
+	// buildReq is called again on auth retry: a request body reader is
+	// consumed by the first attempt, so the retry needs a fresh request.
+	buildReq := func() (*http.Request, error) {
+		var reqBody io.Reader
+		if payload != nil {
+			reqBody = bytes.NewReader(payload)
 		}
-		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
-		req.Header.Set("CSRFPreventionToken", c.csrfToken)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		if c.authType == AuthToken {
+			req.Header.Set("Authorization", "PVEAPIToken="+c.tokenID+"="+c.tokenSecret)
+		} else {
+			if c.ticket == "" {
+				if err := c.login(); err != nil {
+					return nil, err
+				}
+			}
+			req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
+			req.Header.Set("CSRFPreventionToken", c.csrfToken)
+		}
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		return req, nil
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+	send := func(req *http.Request) ([]byte, int, error) {
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, 0, fmt.Errorf("request failed: %w", err)
+		}
+		respBody, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+		}
+		zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
+		return respBody, resp.StatusCode, nil
 	}
-	respBody, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
+
+	req, err := buildReq()
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
 	}
-	zap.S().Debugw("API call", "method", method, "url", req.URL.RequestURI(), "status", resp.StatusCode)
+	respBody, status, err := send(req)
+	if err != nil {
+		return nil, err
+	}
 
 	// A 401 on a cached password-auth ticket means the ticket expired or was
 	// invalidated (Proxmox allows one ticket per user/IP; another login kills it).
 	// Re-login once and retry instead of failing forever on a stale cookie.
-	if resp.StatusCode == http.StatusUnauthorized && c.authType == AuthPassword {
+	if status == http.StatusUnauthorized && c.authType == AuthPassword {
 		c.ticket = ""
 		if err := c.login(); err != nil {
 			return nil, err
 		}
-		req.Header.Set("Cookie", "PVEAuthCookie="+c.ticket)
-		req.Header.Set("CSRFPreventionToken", c.csrfToken)
-		resp2, err := c.httpClient.Do(req)
+		req, err = buildReq()
 		if err != nil {
-			return nil, fmt.Errorf("request failed: %w", err)
+			return nil, err
 		}
-		respBody, err = io.ReadAll(resp2.Body)
-		_ = resp2.Body.Close()
+		respBody, status, err = send(req)
 		if err != nil {
-			return nil, fmt.Errorf("read response: %w", err)
+			return nil, err
 		}
-		zap.S().Debugw("API call (retry)", "method", method, "url", req.URL.RequestURI(), "status", resp2.StatusCode)
-		resp = resp2
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("API error %d: %s", status, respBody)
 	}
 
 	var apiResp apiResponse
@@ -293,13 +312,17 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 }
 
 func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
+	target := c.nodeFor(config.Node)
+	// The clone task runs on the node hosting the template; the new VM lands
+	// on target, which may be a different node.
+	source := c.vmNode(ctx, config.TemplateID)
 	body := map[string]interface{}{
 		"newid":  config.VMID,
 		"name":   config.Name,
-		"target": c.node,
+		"target": target,
 	}
 
-	data, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/clone", c.node, config.TemplateID), body)
+	data, err := c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/clone", source, config.TemplateID), body)
 	if err != nil {
 		return fmt.Errorf("clone VM %d: %w", config.TemplateID, err)
 	}
@@ -308,7 +331,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 	var taskID string
 	_ = json.Unmarshal(data, &taskID)
 	if taskID != "" {
-		if err := c.waitForTask(ctx, c.node, taskID); err != nil {
+		if err := c.waitForTask(ctx, source, taskID); err != nil {
 			return fmt.Errorf("wait for clone task: %w", err)
 		}
 	}
@@ -334,7 +357,7 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 		params.Set("tags", config.Tags)
 	}
 
-	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", c.node, config.VMID, params.Encode()), nil); err != nil {
+	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", target, config.VMID, params.Encode()), nil); err != nil {
 		return fmt.Errorf("configure cloned VM: %w", err)
 	}
 
@@ -357,7 +380,7 @@ func (c *Client) vmNode(ctx context.Context, vmid int) string {
 			}
 		}
 	}
-	return c.node
+	return c.nodeFor("")
 }
 
 // nodeFor returns the per-VM target node, falling back to the client default.
@@ -365,7 +388,10 @@ func (c *Client) nodeFor(configNode string) string {
 	if configNode != "" {
 		return configNode
 	}
-	return c.node
+	if c.node != "" {
+		return c.node
+	}
+	return c.resolved
 }
 
 func (c *Client) stopVMOn(ctx context.Context, node string, vmid int) error {
@@ -377,44 +403,66 @@ func (c *Client) StopVM(ctx context.Context, vmid int) error {
 	return c.stopVMOn(ctx, c.vmNode(ctx, vmid), vmid)
 }
 
-func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
-	node := c.vmNode(ctx, vmid)
+// vmShutdownWait is how long DeleteVMOn waits for a graceful shutdown before
+// falling back to a hard stop. vmHardStopWait is how long it waits for the
+// hard stop to take effect. Package vars so tests can shrink them.
+var (
+	vmShutdownWait = 30 * time.Second
+	vmHardStopWait = 10 * time.Second
+)
 
-	// Try to stop first (ignore error if already stopped)
-	_ = c.stopVMOn(ctx, node, vmid)
+// DeleteVMOn deletes a VM on the given Proxmox node. An empty node triggers a
+// cluster-wide lookup of the node hosting the VM. It shuts the VM down
+// gracefully first (qemu-guest-agent based) and only hard stops it if the
+// shutdown does not complete in time.
+func (c *Client) DeleteVMOn(ctx context.Context, node string, vmid int) error {
+	if node == "" {
+		node = c.vmNode(ctx, vmid)
+	}
 
-	// Wait a bit for shutdown
-	time.Sleep(3 * time.Second)
+	// Graceful shutdown first, so the guest OS (Talos) flushes state.
+	_, _ = c.do(ctx, "POST", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/shutdown", node, vmid), nil)
+	if !c.waitForStopped(ctx, node, vmid, vmShutdownWait) {
+		zap.S().Warnw("graceful shutdown timed out, hard stopping VM", "vmid", vmid, "proxmox_node", node)
+		_ = c.stopVMOn(ctx, node, vmid)
+		c.waitForStopped(ctx, node, vmid, vmHardStopWait)
+	}
 
 	_, err := c.do(ctx, "DELETE", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d", node, vmid), nil)
 	if err != nil {
 		return fmt.Errorf("delete VM %d: %w", vmid, err)
 	}
 
-	zap.S().Infow("VM deleted", "vmid", vmid)
+	zap.S().Infow("VM deleted", "vmid", vmid, "proxmox_node", node)
 	return nil
 }
 
-func (c *Client) FindVMByName(ctx context.Context, name string) (int, error) {
-	data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu?filter=name=%s", c.node, url.QueryEscape(name)), nil)
-	if err != nil {
-		return 0, err
-	}
+// DeleteVM deletes a VM wherever it lives in the cluster.
+func (c *Client) DeleteVM(ctx context.Context, vmid int) error {
+	return c.DeleteVMOn(ctx, "", vmid)
+}
 
-	var vms []struct {
-		VMID   int    `json:"vmid"`
-		Name   string `json:"name"`
-		Status string `json:"status"`
-	}
-	if err := json.Unmarshal(data, &vms); err != nil {
-		return 0, err
-	}
-	for _, vm := range vms {
-		if vm.Name == name {
-			return vm.VMID, nil
+// waitForStopped polls the VM status until it reports "stopped", the wait
+// elapses, or the context is cancelled. Returns true only when stopped.
+func (c *Client) waitForStopped(ctx context.Context, node string, vmid int, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		data, err := c.do(ctx, "GET", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/status/current", node, vmid), nil)
+		if err == nil {
+			var status struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(data, &status) == nil && status.Status == "stopped" {
+				return true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
 		}
 	}
-	return 0, fmt.Errorf("VM %q not found", name)
+	return false
 }
 
 func (c *Client) waitForIP(ctx context.Context, node string, vmid int, timeout time.Duration) (string, error) {
@@ -524,9 +572,12 @@ func (c *Client) ListNodes(ctx context.Context) ([]string, error) {
 	return online, nil
 }
 
-// SetVMConfig updates QEMU configuration via PUT /nodes/{node}/qemu/{vmid}/config.
-func (c *Client) SetVMConfig(ctx context.Context, vmid int, params url.Values) error {
-	node := c.vmNode(ctx, vmid)
+// SetVMConfigOn updates QEMU configuration on the given Proxmox node. An
+// empty node triggers a cluster-wide lookup of the node hosting the VM.
+func (c *Client) SetVMConfigOn(ctx context.Context, node string, vmid int, params url.Values) error {
+	if node == "" {
+		node = c.vmNode(ctx, vmid)
+	}
 	if params == nil {
 		params = url.Values{}
 	}
@@ -555,14 +606,14 @@ func (c *Client) GetNode(ctx context.Context) (string, error) {
 	return nodes[0], nil
 }
 
-// ResolveNode sets the client's node to a valid cluster node.
-// Must be called before API operations that target a specific node.
+// ResolveNode caches a valid default cluster node for placement fallback.
+// The configured node itself is never overwritten.
 func (c *Client) ResolveNode(ctx context.Context) error {
 	node, err := c.GetNode(ctx)
 	if err != nil {
 		return err
 	}
-	c.node = node
+	c.resolved = node
 	return nil
 }
 
