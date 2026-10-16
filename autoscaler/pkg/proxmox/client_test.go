@@ -277,7 +277,7 @@ func TestResolveNode(t *testing.T) {
 
 	err = c.ResolveNode(context.Background())
 	assert.NoError(t, err)
-	assert.Equal(t, "pve1", c.node)
+	assert.Equal(t, "pve1", c.resolved)
 }
 
 func TestPasswordAuth_ReloginOn401(t *testing.T) {
@@ -665,6 +665,12 @@ func TestDeleteVM(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		methods = append(methods, r.Method)
 		paths = append(paths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "/status/current") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{"status": "stopped"},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
@@ -672,19 +678,53 @@ func TestDeleteVM(t *testing.T) {
 	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
 	require.NoError(t, err)
 
-	start := time.Now()
 	err = c.DeleteVM(context.Background(), 300)
-	elapsed := time.Since(start)
 	assert.NoError(t, err)
-	// DeleteVM resolves the VM's node (GET cluster resources), stops it, then
-	// sleeps 3s, then deletes it on the resolved node.
-	require.Len(t, methods, 3)
+	// DeleteVM resolves the VM's node (GET cluster resources), shuts it down
+	// gracefully, polls status until stopped, then deletes it.
+	require.Len(t, methods, 4)
 	assert.Equal(t, "GET", methods[0])    // node lookup
-	assert.Equal(t, "POST", methods[1])   // stop
-	assert.Equal(t, "DELETE", methods[2]) // delete
-	assert.Contains(t, paths[1], "/status/stop")
-	assert.Equal(t, "/api2/json/nodes/pve/qemu/300", paths[2])
-	assert.GreaterOrEqual(t, elapsed.Seconds(), 2.5) // 3s sleep
+	assert.Equal(t, "POST", methods[1])   // graceful shutdown
+	assert.Equal(t, "GET", methods[2])    // status poll
+	assert.Equal(t, "DELETE", methods[3]) // delete
+	assert.Contains(t, paths[1], "/status/shutdown")
+	assert.Equal(t, "/api2/json/nodes/pve/qemu/300", paths[3])
+}
+
+func TestDeleteVM_HardStopsWhenShutdownIgnored(t *testing.T) {
+	var methods []string
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		paths = append(paths, r.URL.Path)
+		if strings.Contains(r.URL.Path, "/status/current") {
+			// VM refuses to shut down; always reports running.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{"status": "running"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+	}))
+	defer srv.Close()
+
+	oldShutdownWait, oldHardStopWait := vmShutdownWait, vmHardStopWait
+	vmShutdownWait, vmHardStopWait = 50*time.Millisecond, 50*time.Millisecond
+	defer func() { vmShutdownWait, vmHardStopWait = oldShutdownWait, oldHardStopWait }()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.DeleteVM(context.Background(), 300)
+	assert.NoError(t, err)
+	require.Len(t, methods, 6)
+	assert.Equal(t, "GET", methods[0])    // node lookup
+	assert.Equal(t, "POST", methods[1])   // graceful shutdown (ignored)
+	assert.Equal(t, "POST", methods[3])   // hard stop
+	assert.Equal(t, "DELETE", methods[5]) // delete
+	assert.Contains(t, paths[1], "/status/shutdown")
+	assert.Contains(t, paths[3], "/status/stop")
+	assert.Equal(t, "/api2/json/nodes/pve/qemu/300", paths[5])
 }
 
 func TestDeleteVM_ResolvesNodeFromCluster(t *testing.T) {
@@ -699,6 +739,12 @@ func TestDeleteVM_ResolvesNodeFromCluster(t *testing.T) {
 			})
 			return
 		}
+		if strings.Contains(r.URL.Path, "/status/current") {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": map[string]string{"status": "stopped"},
+			})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
 	}))
 	defer srv.Close()
@@ -709,8 +755,8 @@ func TestDeleteVM_ResolvesNodeFromCluster(t *testing.T) {
 
 	err = c.DeleteVM(context.Background(), 300)
 	assert.NoError(t, err)
-	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300/status/stop", paths[1])
-	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300", paths[2])
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300/status/shutdown", paths[1])
+	assert.Equal(t, "/api2/json/nodes/pve2/qemu/300", paths[3])
 }
 
 func TestCreateVM_UsesConfigNode(t *testing.T) {
@@ -752,45 +798,6 @@ func TestCreateVM_UsesConfigNode(t *testing.T) {
 	assert.Equal(t, "/api2/json/nodes/pve2/qemu", paths[0])
 	assert.Equal(t, "/api2/json/nodes/pve2/qemu/500/status/start", paths[1])
 	assert.Contains(t, paths[2], "/api2/json/nodes/pve2/qemu/500/agent/network-get-interfaces")
-}
-
-func TestFindVMByName_Found(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "GET", r.Method)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"data": []map[string]interface{}{
-				{"vmid": 100, "name": "other-vm", "status": "running"},
-				{"vmid": 200, "name": "target-vm", "status": "stopped"},
-				{"vmid": 300, "name": "another-vm", "status": "running"},
-			},
-		})
-	}))
-	defer srv.Close()
-
-	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
-	require.NoError(t, err)
-
-	vmid, err := c.FindVMByName(context.Background(), "target-vm")
-	assert.NoError(t, err)
-	assert.Equal(t, 200, vmid)
-}
-
-func TestFindVMByName_NotFound(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"data": []map[string]interface{}{
-				{"vmid": 100, "name": "other-vm", "status": "running"},
-			},
-		})
-	}))
-	defer srv.Close()
-
-	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
-	require.NoError(t, err)
-
-	_, err = c.FindVMByName(context.Background(), "nonexistent")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestWaitForIP_Success(t *testing.T) {
@@ -942,10 +949,63 @@ func TestCloneVM(t *testing.T) {
 		MACAddress:    "AA:BB:CC:DD:EE:FF",
 	})
 	assert.NoError(t, err)
-	require.Len(t, calls, 3)
-	assert.Contains(t, calls[0], "/clone")
-	assert.Contains(t, calls[1], "/tasks/")
-	assert.Contains(t, calls[2], "PUT")
+	require.Len(t, calls, 4)
+	assert.Contains(t, calls[0], "/cluster/resources")
+	assert.Contains(t, calls[1], "/clone")
+	assert.Contains(t, calls[2], "/tasks/")
+	assert.Equal(t, "PUT /api2/json/nodes/pve/qemu/100/config", calls[3])
+}
+
+func TestCloneVM_UsesConfigNode(t *testing.T) {
+	var gotPaths []string
+	gotForm := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, fmt.Sprintf("%s %s", r.Method, r.URL.Path))
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api2/json/cluster/resources":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{
+					{"vmid": 900, "name": "tmpl", "node": "pve0", "template": 1, "type": "qemu", "status": "stopped"},
+				},
+			})
+		case r.Method == "POST" && r.URL.Path == "/api2/json/nodes/pve0/qemu/900/clone":
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for k, v := range body {
+				gotForm[k] = fmt.Sprint(v)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": "UPID:clone-task"})
+		case r.Method == "GET" && r.URL.Path == "/api2/json/nodes/pve0/tasks/UPID:clone-task":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": map[string]string{"status": "stopped"}})
+		case r.Method == "PUT" && r.URL.Path == "/api2/json/nodes/pve2/qemu/901/config":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": nil})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL, "", "", "user@realm!tok", "secret", "pve", true)
+	require.NoError(t, err)
+
+	err = c.cloneVM(context.Background(), VMConfig{
+		Name:          "clone-x",
+		Node:          "pve2",
+		VMID:          901,
+		TemplateID:    900,
+		VCPU:          2,
+		MemoryMiB:     2048,
+		DiskGiB:       10,
+		StoragePool:   "local-lvm",
+		NetworkBridge: "vmbr0",
+	})
+	require.NoError(t, err)
+	require.Len(t, gotPaths, 4)
+	assert.Equal(t, "GET /api2/json/cluster/resources", gotPaths[0])
+	assert.Equal(t, "POST /api2/json/nodes/pve0/qemu/900/clone", gotPaths[1])
+	assert.Equal(t, "PUT /api2/json/nodes/pve2/qemu/901/config", gotPaths[3])
+	assert.Equal(t, "901", gotForm["newid"])
+	assert.Equal(t, "pve2", gotForm["target"])
 }
 
 func TestCreateVM_Scratch(t *testing.T) {

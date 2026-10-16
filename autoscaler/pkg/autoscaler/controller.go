@@ -33,6 +33,9 @@ type VMSize struct {
 }
 
 type GPUNodeConfig struct {
+	// Nodes lists the Proxmox hosts this PCI set lives on. Empty means the
+	// default node.
+	Nodes      []string            `json:"nodes"`
 	PCIDevices []proxmox.PCIDevice `json:"pci_devices"`
 }
 
@@ -114,11 +117,11 @@ func (r *Reconciler) reconcile(ctx context.Context) error {
 		// Detect type from name prefix to get correct base VMID
 		if strings.HasPrefix(node.Name, cfg.ClusterName+"-"+r.GPUPrefix+"-") {
 			if vmid, ok := deriveVMID(node.Name, cfg.ClusterName, r.GPUPrefix, r.BaseGPUVMID); ok {
-				r.drainAndDelete(ctx, node.Name, vmid)
+				r.drainAndDelete(ctx, node.Name, vmid, "")
 			}
 		} else {
 			if vmid, ok := deriveVMID(node.Name, cfg.ClusterName, r.WorkerPrefix, r.BaseVMID); ok {
-				r.drainAndDelete(ctx, node.Name, vmid)
+				r.drainAndDelete(ctx, node.Name, vmid, "")
 			}
 		}
 	}
@@ -481,7 +484,7 @@ func (r *Reconciler) reapOrphans(ctx context.Context, owned []proxmox.VM, regist
 			continue
 		}
 		zap.S().Warnw("Deleting VM that never joined the cluster", "vm", vm.Name, "vmid", vm.VMID, "status", vm.Status, "uptime_seconds", vm.Uptime, "unregistered_for", now.Sub(first).String())
-		if err := r.Proxmox.DeleteVM(ctx, vm.VMID); err != nil {
+		if err := r.Proxmox.DeleteVMOn(ctx, vm.Node, vm.VMID); err != nil {
 			zap.S().Errorw("Failed to delete VM that never joined the cluster", "error", err, "vmid", vm.VMID)
 			kept = append(kept, vm)
 			continue
@@ -533,6 +536,32 @@ func (r *Reconciler) prunePending(owned []proxmox.VM) {
 	}
 }
 
+// gpuPlacement is one host's PCI passthrough set: where a GPU VM may land
+// and which devices it gets.
+type gpuPlacement struct {
+	node    string
+	devices []proxmox.PCIDevice
+}
+
+// gpuPlacements expands worker_gpu_nodes entries into per-host placements.
+// An entry without hosts produces one placement for the default node.
+func gpuPlacements(cfg *Config) []gpuPlacement {
+	var placements []gpuPlacement
+	for _, gpuNode := range cfg.GPUNodes {
+		if len(gpuNode.PCIDevices) == 0 {
+			continue
+		}
+		if len(gpuNode.Nodes) == 0 {
+			placements = append(placements, gpuPlacement{devices: gpuNode.PCIDevices})
+			continue
+		}
+		for _, n := range gpuNode.Nodes {
+			placements = append(placements, gpuPlacement{node: n, devices: gpuNode.PCIDevices})
+		}
+	}
+	return placements
+}
+
 func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cfg *Config, workerType string, current int32, owned []proxmox.VM) {
 	prefix := r.WorkerPrefix
 	baseVMID := r.BaseVMID
@@ -553,12 +582,15 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 	createCount := len(owned)
 
 	// Non-GPU workers are spread round-robin across online nodes by their
-	// index; GPU workers pin to the configured node (PCI passthrough lives on
-	// specific hosts).
-	// ponytail: index%len(nodes) spreading, no least-loaded/migration; switch to
+	// index; GPU workers pin to the Proxmox host each worker_gpu_nodes entry
+	// was configured for (PCI passthrough lives on specific hosts).
+	// ponytail: index%len(placement) spreading, no least-loaded/migration; switch to
 	// Node.CPU/MaxCPU aware placement if node counts diverge unevenly.
 	var nodes []string
-	if workerType != "gpu" {
+	var placements []gpuPlacement
+	if workerType == "gpu" {
+		placements = gpuPlacements(cfg)
+	} else {
 		var err error
 		nodes, err = r.Proxmox.ListNodes(ctx)
 		if err != nil {
@@ -575,20 +607,16 @@ func (r *Reconciler) scaleUp(ctx context.Context, desired int32, size VMSize, cf
 		}
 		createCount++
 		node := ""
-		if len(nodes) > 0 {
+		var pciDevices []proxmox.PCIDevice
+		if workerType == "gpu" {
+			if len(placements) > 0 {
+				p := placements[index%len(placements)]
+				node, pciDevices = p.node, p.devices
+			}
+		} else if len(nodes) > 0 {
 			node = nodes[index%len(nodes)]
 		}
 		zap.S().Infow("Creating worker VM", "name", vmName, "vmid", vmid, "type", workerType, "proxmox_node", node)
-
-		var pciDevices []proxmox.PCIDevice
-		if workerType == "gpu" {
-			for _, gpuNode := range cfg.GPUNodes {
-				if len(gpuNode.PCIDevices) > 0 {
-					pciDevices = gpuNode.PCIDevices
-					break
-				}
-			}
-		}
 
 		tags := cfg.AutoScalerTag
 		if workerType == "gpu" {
@@ -652,14 +680,14 @@ func (r *Reconciler) scaleDown(ctx context.Context, desired int32, clusterName, 
 			continue
 		}
 		zap.S().Infow("Removing worker node", "node", vm.Name)
-		r.drainAndDelete(ctx, vm.Name, vm.VMID)
+		r.drainAndDelete(ctx, vm.Name, vm.VMID, vm.Node)
 		deleted++
 	}
 }
 
-func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid int) {
+func (r *Reconciler) drainAndDelete(ctx context.Context, nodeName string, vmid int, node string) {
 	r.drainNode(ctx, nodeName)
-	if err := r.Proxmox.DeleteVM(ctx, vmid); err != nil {
+	if err := r.Proxmox.DeleteVMOn(ctx, node, vmid); err != nil {
 		zap.S().Errorw("Failed to delete VM", "error", err, "vmid", vmid)
 	}
 }
@@ -679,7 +707,7 @@ func (r *Reconciler) tagVMsWithNodeName(ctx context.Context, owned []proxmox.VM,
 			}
 		}
 		tags = append(tags, vm.Name)
-		if err := r.Proxmox.SetVMConfig(ctx, vm.VMID, url.Values{"tags": {strings.Join(tags, ",")}}); err != nil {
+		if err := r.Proxmox.SetVMConfigOn(ctx, vm.Node, vm.VMID, url.Values{"tags": {strings.Join(tags, ",")}}); err != nil {
 			zap.S().Errorw("Failed to tag VM with node name", "error", err, "vm", vm.Name, "vmid", vm.VMID)
 			if firstErr == nil {
 				firstErr = err

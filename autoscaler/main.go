@@ -51,7 +51,7 @@ func main() {
 	zap.S().Infow("Starting talos-proxmox-autoscaler", "log_level", logLevel)
 
 	proxmoxURL := getEnv("PROXMOX_API_URL", "https://pve.example.com:8006")
-	proxmoxNode := getEnv("PROXMOX_NODE", "pve")
+	proxmoxNode := getEnv("PROXMOX_NODE", "")
 	username := readFile(getEnv("PROXMOX_USERNAME_FILE", ""))
 	password := readFile(getEnv("PROXMOX_PASSWORD_FILE", ""))
 	tokenID := readFile(getEnv("PROXMOX_API_TOKEN_ID_FILE", "/etc/secrets/proxmox_api_token_id"))
