@@ -37,6 +37,22 @@ type GPUNodeConfig struct {
 	// default node.
 	Nodes      []string            `json:"nodes"`
 	PCIDevices []proxmox.PCIDevice `json:"pci_devices"`
+	// MediatedDevices allows specifying mediated device types directly.
+	MediatedDevices []MediatedDeviceConfig `json:"mediated_devices,omitempty"`
+	// Type/ID/name fields for convenience
+	Type string `json:"type,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// MediatedDeviceConfig configures a mediated device for GPU workers.
+type MediatedDeviceConfig struct {
+	ID              string   `json:"id,omitempty"`
+	PCIe            bool     `json:"pcie,omitempty"`
+	GPU             bool     `json:"gpu,omitempty"`
+	MediatedDevice  string   `json:"mediated_device,omitempty"`
+	Mdev            string   `json:"mdev,omitempty"`
+	PCIAddress      string   `json:"pci_address,omitempty"`
+	Devices         []string `json:"devices,omitempty"`
 }
 
 type Config struct {
@@ -225,9 +241,33 @@ func (r *Reconciler) readConfig(ctx context.Context) (*Config, error) {
 		VLANID:        atoiDefault(d["vlan_id"], 0),
 	}
 
-	if d["worker_gpu_nodes"] != "" {
-		if err := json.Unmarshal([]byte(d["worker_gpu_nodes"]), &config.GPUNodes); err != nil {
+	gpuNodesJSON := d["worker_gpu_nodes"]
+	if gpuNodesJSON == "" {
+		gpuNodesJSON = d["gpu_nodes"]
+	}
+	if gpuNodesJSON == "" {
+		gpuNodesJSON = d["worker_gpu_mediated_devices"]
+	}
+	if gpuNodesJSON == "" {
+		gpuNodesJSON = d["gpu_mediated_devices"]
+	}
+	if gpuNodesJSON == "" {
+		gpuNodesJSON = d["mediated_devices"]
+	}
+	if gpuNodesJSON == "" {
+		gpuNodesJSON = d["pci_mediated_devices"]
+	}
+	if gpuNodesJSON != "" {
+		if err := json.Unmarshal([]byte(gpuNodesJSON), &config.GPUNodes); err != nil {
 			return nil, fmt.Errorf("parse worker_gpu_nodes: %w", err)
+		}
+	} else if d["gpu_pci_devices"] != "" {
+		if err := json.Unmarshal([]byte(d["gpu_pci_devices"]), &config.GPUNodes); err != nil {
+			return nil, fmt.Errorf("parse gpu_pci_devices: %w", err)
+		}
+	} else if d["pci_devices"] != "" {
+		if err := json.Unmarshal([]byte(d["pci_devices"]), &config.GPUNodes); err != nil {
+			return nil, fmt.Errorf("parse pci_devices: %w", err)
 		}
 	}
 
@@ -548,15 +588,35 @@ type gpuPlacement struct {
 func gpuPlacements(cfg *Config) []gpuPlacement {
 	var placements []gpuPlacement
 	for _, gpuNode := range cfg.GPUNodes {
-		if len(gpuNode.PCIDevices) == 0 {
+		var devices []proxmox.PCIDevice
+		if len(gpuNode.PCIDevices) > 0 {
+			devices = append(devices, gpuNode.PCIDevices...)
+		}
+		for _, md := range gpuNode.MediatedDevices {
+			pci := proxmox.PCIDevice{
+				ID:              md.ID,
+				PCIe:            md.PCIe,
+				GPU:             md.GPU,
+				MediatedDevice:  md.MediatedDevice,
+				Mdev:            md.Mdev,
+			}
+			if pci.ID == "" && len(md.Devices) > 0 {
+				pci.ID = md.Devices[0]
+			}
+			if pci.ID == "" && md.PCIAddress != "" {
+				pci.ID = md.PCIAddress
+			}
+			devices = append(devices, pci)
+		}
+		if len(devices) == 0 {
 			continue
 		}
 		if len(gpuNode.Nodes) == 0 {
-			placements = append(placements, gpuPlacement{devices: gpuNode.PCIDevices})
+			placements = append(placements, gpuPlacement{devices: devices})
 			continue
 		}
 		for _, n := range gpuNode.Nodes {
-			placements = append(placements, gpuPlacement{node: n, devices: gpuNode.PCIDevices})
+			placements = append(placements, gpuPlacement{node: n, devices: devices})
 		}
 	}
 	return placements
