@@ -45,6 +45,16 @@ type PCIDevice struct {
 	ID   string `json:"id"`
 	PCIe bool   `json:"pcie"`
 	GPU  bool   `json:"gpu"`
+	// MediatedDevice specifies the mdev type for mediated device passthrough
+	// (e.g., "nvidia-11", "i915-GVTg_V5_4", or a UUID for pre-created mdevs).
+	MediatedDevice string `json:"mediated_device,omitempty"`
+	// Mdev is an alias for MediatedDevice for compatibility.
+	Mdev string `json:"mdev,omitempty"`
+	// Additional fields for flexibility
+	Mediated      string `json:"mediated,omitempty"`
+	PCIAddress    string `json:"pci_address,omitempty"`
+	Address       string `json:"address,omitempty"`
+	DeviceID      string `json:"device_id,omitempty"`
 }
 
 type VMConfig struct {
@@ -297,12 +307,32 @@ func (c *Client) createVMFromScratch(ctx context.Context, config VMConfig) error
 	}
 	for i, pci := range config.PCIDevices {
 		key := fmt.Sprintf("hostpci%d", i)
-		value := fmt.Sprintf("host=%s", pci.ID)
+		hostID := pci.ID
+		if hostID == "" {
+			hostID = pci.PCIAddress
+		}
+		if hostID == "" {
+			hostID = pci.Address
+		}
+		if hostID == "" {
+			hostID = pci.DeviceID
+		}
+		value := fmt.Sprintf("host=%s", hostID)
 		if pci.PCIe {
 			value += ",pcie=1"
 		}
 		if pci.GPU {
 			value += ",gpu=1"
+		}
+		mdev := pci.MediatedDevice
+		if mdev == "" {
+			mdev = pci.Mdev
+		}
+		if mdev == "" {
+			mdev = pci.Mediated
+		}
+		if mdev != "" {
+			value += fmt.Sprintf(",mdev=%s", mdev)
 		}
 		params.Set(key, value)
 	}
@@ -355,6 +385,37 @@ func (c *Client) cloneVM(ctx context.Context, config VMConfig) error {
 	}
 	if config.Tags != "" {
 		params.Set("tags", config.Tags)
+	}
+	for i, pci := range config.PCIDevices {
+		key := fmt.Sprintf("hostpci%d", i)
+		hostID := pci.ID
+		if hostID == "" {
+			hostID = pci.PCIAddress
+		}
+		if hostID == "" {
+			hostID = pci.Address
+		}
+		if hostID == "" {
+			hostID = pci.DeviceID
+		}
+		value := fmt.Sprintf("host=%s", hostID)
+		if pci.PCIe {
+			value += ",pcie=1"
+		}
+		if pci.GPU {
+			value += ",gpu=1"
+		}
+		mdev := pci.MediatedDevice
+		if mdev == "" {
+			mdev = pci.Mdev
+		}
+		if mdev == "" {
+			mdev = pci.Mediated
+		}
+		if mdev != "" {
+			value += fmt.Sprintf(",mdev=%s", mdev)
+		}
+		params.Set(key, value)
 	}
 
 	if _, err := c.do(ctx, "PUT", fmt.Sprintf("/api2/json/nodes/%s/qemu/%d/config?%s", target, config.VMID, params.Encode()), nil); err != nil {
