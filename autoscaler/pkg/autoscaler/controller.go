@@ -46,13 +46,13 @@ type GPUNodeConfig struct {
 
 // MediatedDeviceConfig configures a mediated device for GPU workers.
 type MediatedDeviceConfig struct {
-	ID              string   `json:"id,omitempty"`
-	PCIe            bool     `json:"pcie,omitempty"`
-	GPU             bool     `json:"gpu,omitempty"`
-	MediatedDevice  string   `json:"mediated_device,omitempty"`
-	Mdev            string   `json:"mdev,omitempty"`
-	PCIAddress      string   `json:"pci_address,omitempty"`
-	Devices         []string `json:"devices,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	PCIe           bool     `json:"pcie,omitempty"`
+	GPU            bool     `json:"gpu,omitempty"`
+	MediatedDevice string   `json:"mediated_device,omitempty"`
+	Mdev           string   `json:"mdev,omitempty"`
+	PCIAddress     string   `json:"pci_address,omitempty"`
+	Devices        []string `json:"devices,omitempty"`
 }
 
 type Config struct {
@@ -594,11 +594,11 @@ func gpuPlacements(cfg *Config) []gpuPlacement {
 		}
 		for _, md := range gpuNode.MediatedDevices {
 			pci := proxmox.PCIDevice{
-				ID:              md.ID,
-				PCIe:            md.PCIe,
-				GPU:             md.GPU,
-				MediatedDevice:  md.MediatedDevice,
-				Mdev:            md.Mdev,
+				ID:             md.ID,
+				PCIe:           md.PCIe,
+				GPU:            md.GPU,
+				MediatedDevice: md.MediatedDevice,
+				Mdev:           md.Mdev,
 			}
 			if pci.ID == "" && len(md.Devices) > 0 {
 				pci.ID = md.Devices[0]

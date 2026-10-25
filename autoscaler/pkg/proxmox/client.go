@@ -51,10 +51,10 @@ type PCIDevice struct {
 	// Mdev is an alias for MediatedDevice for compatibility.
 	Mdev string `json:"mdev,omitempty"`
 	// Additional fields for flexibility
-	Mediated      string `json:"mediated,omitempty"`
-	PCIAddress    string `json:"pci_address,omitempty"`
-	Address       string `json:"address,omitempty"`
-	DeviceID      string `json:"device_id,omitempty"`
+	Mediated   string `json:"mediated,omitempty"`
+	PCIAddress string `json:"pci_address,omitempty"`
+	Address    string `json:"address,omitempty"`
+	DeviceID   string `json:"device_id,omitempty"`
 }
 
 type VMConfig struct {
